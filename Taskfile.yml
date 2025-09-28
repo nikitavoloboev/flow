@@ -19,3 +19,8 @@ tasks:
         go build -o "$target" .
         chmod 755 "$target"
         echo "Installed CLI to $target"
+        fish_completion_dir="$HOME/.config/fish/completions"
+        mkdir -p "$fish_completion_dir"
+        cp completions/flow.fish "$fish_completion_dir/flow.fish"
+        cp completions/f.fish "$fish_completion_dir/f.fish"
+        echo "Installed fish completions to $fish_completion_dir/{flow.fish,f.fish}"
