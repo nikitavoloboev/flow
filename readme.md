@@ -40,7 +40,11 @@ Flags:
 Use "flow [command] --help" for more information about a command.
 ```
 
-To give you a feel for it. I do most of the dev for it with [codex](https://github.com/openai/codex).
+For `f commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.
+
+## Contributing
+
+Any PR to improve is welcome. I do most of the dev with [codex](https://github.com/openai/codex) & hand writing code with [Cursor](https://cursor.com). But I would love good **working** & **useful** patches (ideally).
 
 ### 🖤
 

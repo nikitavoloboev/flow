@@ -14,6 +14,7 @@ import (
 
 	"github.com/dzonerzy/go-snap/snap"
 	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 )
 
@@ -23,7 +24,10 @@ const (
 	taskfilePath       = "Taskfile.yml"
 	commitModelName    = "gpt-5-nano"
 	maxCommitDiffRunes = 12000
+	openAIAPIKeyEnv    = "OPENAI_API_KEY"
 )
+
+var cachedOpenAIKey string
 
 func main() {
 	app := snap.New("flow", "flow is CLI to do things fast").
@@ -282,7 +286,7 @@ func runDeploy(ctx *snap.Context) error {
 		return fmt.Errorf("task publish failed: %w", err)
 	}
 
-	fmt.Fprintln(ctx.Stdout(), "✔️ Deployed")
+	fmt.Fprintln(ctx.Stdout(), "✔️ in your PATH, ready to use as `f` command")
 	return nil
 }
 
@@ -296,18 +300,23 @@ func runCommit(ctx *snap.Context) error {
 		return err
 	}
 
-	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
-		return fmt.Errorf("OPENAI_API_KEY is not set")
+	apiKey, err := resolveOpenAIKey(ctx.Context())
+	if err != nil {
+		return reportError(ctx, err)
+	}
+
+	if err := runGitCommandStreaming(ctx, "add", "."); err != nil {
+		return reportError(ctx, fmt.Errorf("git add .: %w", err))
 	}
 
 	diffOutput, err := exec.Command("git", "diff", "--cached").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git diff --cached: %w", err)
+		return reportError(ctx, fmt.Errorf("git diff --cached: %w", err))
 	}
 
 	diff := string(diffOutput)
 	if strings.TrimSpace(diff) == "" {
-		return fmt.Errorf("no staged changes to commit; stage files with git add")
+		return reportError(ctx, fmt.Errorf("no staged changes to commit; stage files with git add"))
 	}
 
 	trimmedDiff, truncated := truncateDiffForCommit(diff)
@@ -318,18 +327,18 @@ func runCommit(ctx *snap.Context) error {
 		status = string(statusOutput)
 	}
 
-	message, err := generateCommitMessage(ctx.Context(), trimmedDiff, status, truncated)
+	message, err := generateCommitMessage(ctx.Context(), apiKey, trimmedDiff, status, truncated)
 	if err != nil {
-		return err
+		return reportError(ctx, err)
 	}
 
 	message = strings.TrimSpace(trimMatchingQuotes(message))
 	if message == "" {
-		return fmt.Errorf("commit message is empty")
+		return reportError(ctx, fmt.Errorf("commit message is empty"))
 	}
 	paragraphs := splitCommitMessageParagraphs(message)
 	if len(paragraphs) == 0 {
-		return fmt.Errorf("commit message is empty after formatting")
+		return reportError(ctx, fmt.Errorf("commit message is empty after formatting"))
 	}
 
 	fmt.Fprintf(ctx.Stdout(), "Proposed commit message:\n%s\n\n", message)
@@ -344,15 +353,38 @@ func runCommit(ctx *snap.Context) error {
 	cmd.Stderr = ctx.Stderr()
 	cmd.Stdin = ctx.Stdin()
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("git commit: %w", err)
+		return reportError(ctx, fmt.Errorf("git commit: %w", err))
 	}
 
 	fmt.Fprintf(ctx.Stdout(), "✔️ Committed with message: %s\n", paragraphs[0])
 	return nil
 }
 
-func generateCommitMessage(parent context.Context, diff string, status string, truncated bool) (string, error) {
-	client := openai.NewClient()
+// resolveOpenAIKey attempts to find an OpenAI key quickly without extra config.
+// resolveOpenAIKey reads the key from OPENAI_API_KEY and caches it for reuse.
+func resolveOpenAIKey(context.Context) (string, error) {
+	if key := strings.TrimSpace(os.Getenv(openAIAPIKeyEnv)); key != "" {
+		cachedOpenAIKey = key
+		return key, nil
+	}
+
+	if cachedOpenAIKey != "" {
+		return cachedOpenAIKey, nil
+	}
+
+	return "", fmt.Errorf("%s is not set; export it before running flow commit", openAIAPIKeyEnv)
+}
+
+func reportError(ctx *snap.Context, err error) error {
+	if err == nil {
+		return nil
+	}
+	fmt.Fprintln(ctx.Stderr(), err.Error())
+	return err
+}
+
+func generateCommitMessage(parent context.Context, apiKey string, diff string, status string, truncated bool) (string, error) {
+	client := openai.NewClient(option.WithAPIKey(apiKey))
 
 	requestCtx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
@@ -372,8 +404,7 @@ func generateCommitMessage(parent context.Context, diff string, status string, t
 	}
 
 	resp, err := client.Chat.Completions.New(requestCtx, openai.ChatCompletionNewParams{
-		Model:       shared.ChatModel(commitModelName),
-		Temperature: openai.Float(0.2),
+		Model: shared.ChatModel(commitModelName),
 		Messages: []openai.ChatCompletionMessageParamUnion{
 			{
 				OfSystem: &openai.ChatCompletionSystemMessageParam{
