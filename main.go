@@ -167,9 +167,9 @@ func runDeploy(ctx *snap.Context) error {
 		return fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs())
 	}
 
-	project := strings.TrimSpace(ctx.Arg(0))
-	if ctx.NArgs() == 0 {
-		project = ""
+	if ctx.NArgs() == 1 && strings.TrimSpace(ctx.Arg(0)) == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow deploy [project]")
+		return fmt.Errorf("project name cannot be empty")
 	}
 
 	if _, err := os.Stat(taskfilePath); err != nil {
@@ -188,15 +188,19 @@ func runDeploy(ctx *snap.Context) error {
 		return fmt.Errorf("%s does not define a publish task", taskfilePath)
 	}
 
-	if project != "" {
-		fmt.Fprintf(ctx.Stdout(), "Deploying %s via task publish...\n", project)
+	cmd := exec.Command("task", "publish")
+	cmd.Stdin = ctx.Stdin()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			fmt.Fprintln(ctx.Stderr(), trimmed)
+		}
+		return fmt.Errorf("task publish failed: %w", err)
 	}
 
-	cmd := exec.Command("task", "publish")
-	cmd.Stdout = ctx.Stdout()
-	cmd.Stderr = ctx.Stderr()
-	cmd.Stdin = ctx.Stdin()
-	return cmd.Run()
+	fmt.Fprintln(ctx.Stdout(), "✔️ Deployed")
+	return nil
 }
 
 func runGitCheckout(ctx *snap.Context) error {
