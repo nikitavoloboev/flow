@@ -66,9 +66,9 @@ func main() {
 			return runCommitPush(ctx)
 		})
 
-	app.Command("commitReview", "Generate a commit message and confirm in an interactive review before committing").
+	app.Command("commitReviewAndPush", "Generate a commit message, review it interactively, commit, and push").
 		Action(func(ctx *snap.Context) error {
-			return runCommitReview(ctx)
+			return runCommitReviewAndPush(ctx)
 		})
 
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
@@ -163,11 +163,11 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow commitPush")
 		return true
-	case "commitReview":
-		fmt.Fprintln(out, "Generate a commit message and review it interactively before committing")
+	case "commitReviewAndPush":
+		fmt.Fprintln(out, "Generate a commit message, review it interactively, commit, and push")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  flow commitReview")
+		fmt.Fprintln(out, "  flow commitReviewAndPush")
 		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
@@ -203,7 +203,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
-	fmt.Fprintln(out, "  commitReview     Generate a commit message and review it interactively before committing")
+	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -363,9 +363,10 @@ func runCommitPush(ctx *snap.Context) error {
 	return nil
 }
 
-func runCommitReview(ctx *snap.Context) error {
+
+func runCommitReviewAndPush(ctx *snap.Context) error {
 	if ctx.NArgs() != 0 {
-		return reportError(ctx, fmt.Errorf("Usage: flow commitReview"))
+		return reportError(ctx, fmt.Errorf("Usage: flow commitReviewAndPush"))
 	}
 
 	payload, err := prepareCommit(ctx)
@@ -401,6 +402,12 @@ func runCommitReview(ctx *snap.Context) error {
 		return err
 	}
 	printCommitSuccess(ctx, payload)
+
+	if err := runGitCommandStreaming(ctx, "push"); err != nil {
+		return reportError(ctx, fmt.Errorf("git push: %w", err))
+	}
+
+	fmt.Fprintln(ctx.Stdout(), "✔️ Pushed")
 	return nil
 }
 
@@ -482,7 +489,6 @@ func printCommitSuccess(ctx *snap.Context, payload *commitPayload) {
 }
 
 func promptCommitConfirmation(ctx *snap.Context, message string) (string, bool, error) {
-	reader := bufio.NewReader(ctx.Stdin())
 	current := message
 
 	for {
@@ -494,17 +500,17 @@ func promptCommitConfirmation(ctx *snap.Context, message string) (string, bool, 
 		fmt.Fprintln(ctx.Stdout(), "Options: [y] commit  [n] cancel  [e] edit message")
 		fmt.Fprint(ctx.Stdout(), "Choice [y/n/e]: ")
 
-		input, err := reader.ReadString('\n')
+		choice, err := readConfirmationChoice(ctx)
 		if err != nil {
 			return "", false, fmt.Errorf("reading choice: %w", err)
 		}
 
-		switch strings.ToLower(strings.TrimSpace(input)) {
-		case "y", "yes":
+		switch strings.ToLower(string(choice)) {
+		case "y":
 			return current, true, nil
-		case "n", "no", "":
+		case "n":
 			return current, false, nil
-		case "e", "edit":
+		case "e":
 			edited, err := editCommitMessage(ctx, current)
 			if err != nil {
 				return "", false, fmt.Errorf("edit commit message: %w", err)
@@ -560,6 +566,62 @@ func findEditor() string {
 		}
 	}
 	return "vi"
+}
+
+func readConfirmationChoice(ctx *snap.Context) (byte, error) {
+	if file, ok := ctx.Stdin().(*os.File); ok {
+		stateCmd := exec.Command("stty", "-g")
+		stateCmd.Stdin = file
+		stateCmd.Stdout = nil
+		stateCmd.Stderr = nil
+		if oldStateBytes, err := stateCmd.Output(); err == nil {
+			oldState := strings.TrimSpace(string(oldStateBytes))
+			if oldState != "" {
+				rawCmd := exec.Command("stty", "raw", "-echo")
+				rawCmd.Stdin = file
+				rawCmd.Stdout = nil
+				rawCmd.Stderr = nil
+				if err := rawCmd.Run(); err == nil {
+					defer func() {
+						restoreCmd := exec.Command("stty", oldState)
+						restoreCmd.Stdin = file
+						restoreCmd.Stdout = nil
+						restoreCmd.Stderr = nil
+						_ = restoreCmd.Run()
+					}()
+
+					var buf [1]byte
+					for {
+						n, err := file.Read(buf[:])
+						if err != nil {
+							return 0, err
+						}
+						if n == 0 {
+							continue
+						}
+						b := buf[0]
+						if b == '\r' || b == '\n' {
+							continue
+						}
+						fmt.Fprintln(ctx.Stdout())
+						return b, nil
+					}
+				}
+			}
+		}
+	}
+
+	reader := bufio.NewReader(ctx.Stdin())
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if b == '\r' || b == '\n' {
+			continue
+		}
+		return b, nil
+	}
 }
 
 // resolveOpenAIKey attempts to find an OpenAI key quickly without extra config.
