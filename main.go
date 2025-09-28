@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -63,6 +64,11 @@ func main() {
 	app.Command("commitPush", "Commit using GPT-5 nano and push the result to the tracked remote").
 		Action(func(ctx *snap.Context) error {
 			return runCommitPush(ctx)
+		})
+
+	app.Command("commitReview", "Generate a commit message and confirm in an interactive review before committing").
+		Action(func(ctx *snap.Context) error {
+			return runCommitReview(ctx)
 		})
 
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
@@ -157,6 +163,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow commitPush")
 		return true
+	case "commitReview":
+		fmt.Fprintln(out, "Generate a commit message and review it interactively before committing")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow commitReview")
+		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
 		fmt.Fprintln(out)
@@ -191,6 +203,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
+	fmt.Fprintln(out, "  commitReview     Generate a commit message and review it interactively before committing")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -302,33 +315,117 @@ func runDeploy(ctx *snap.Context) error {
 	return nil
 }
 
+type commitPayload struct {
+	message    string
+	paragraphs []string
+}
+
 func runCommit(ctx *snap.Context) error {
 	if ctx.NArgs() != 0 {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow commit")
-		return fmt.Errorf("commit does not accept positional arguments")
+		return reportError(ctx, fmt.Errorf("Usage: flow commit"))
 	}
 
-	if err := ensureGitRepository(); err != nil {
+	payload, err := prepareCommit(ctx)
+	if err != nil {
 		return err
 	}
 
-	apiKey, err := resolveOpenAIKey(ctx.Context())
+	printProposedMessage(ctx, payload.message)
+	if err := commitWithPayload(ctx, payload); err != nil {
+		return err
+	}
+
+	printCommitSuccess(ctx, payload)
+	return nil
+}
+
+func runCommitPush(ctx *snap.Context) error {
+	if ctx.NArgs() != 0 {
+		return reportError(ctx, fmt.Errorf("Usage: flow commitPush"))
+	}
+
+	payload, err := prepareCommit(ctx)
+	if err != nil {
+		return err
+	}
+
+	printProposedMessage(ctx, payload.message)
+	if err := commitWithPayload(ctx, payload); err != nil {
+		return err
+	}
+	printCommitSuccess(ctx, payload)
+
+	if err := runGitCommandStreaming(ctx, "push"); err != nil {
+		return reportError(ctx, fmt.Errorf("git push: %w", err))
+	}
+
+	fmt.Fprintln(ctx.Stdout(), "✔️ Pushed")
+	return nil
+}
+
+func runCommitReview(ctx *snap.Context) error {
+	if ctx.NArgs() != 0 {
+		return reportError(ctx, fmt.Errorf("Usage: flow commitReview"))
+	}
+
+	payload, err := prepareCommit(ctx)
+	if err != nil {
+		return err
+	}
+
+	updatedMessage, confirmed, err := promptCommitConfirmation(ctx, payload.message)
 	if err != nil {
 		return reportError(ctx, err)
 	}
 
+	if !confirmed {
+		fmt.Fprintln(ctx.Stdout(), "Commit cancelled.")
+		return nil
+	}
+
+	if updatedMessage != payload.message {
+		trimmed := strings.TrimSpace(updatedMessage)
+		if trimmed == "" {
+			return reportError(ctx, fmt.Errorf("commit message is empty after editing"))
+		}
+		paragraphs := splitCommitMessageParagraphs(trimmed)
+		if len(paragraphs) == 0 {
+			return reportError(ctx, fmt.Errorf("commit message is empty after formatting"))
+		}
+		payload.message = trimmed
+		payload.paragraphs = paragraphs
+	}
+
+	printProposedMessage(ctx, payload.message)
+	if err := commitWithPayload(ctx, payload); err != nil {
+		return err
+	}
+	printCommitSuccess(ctx, payload)
+	return nil
+}
+
+func prepareCommit(ctx *snap.Context) (*commitPayload, error) {
+	if err := ensureGitRepository(); err != nil {
+		return nil, err
+	}
+
+	apiKey, err := resolveOpenAIKey(ctx.Context())
+	if err != nil {
+		return nil, reportError(ctx, err)
+	}
+
 	if err := runGitCommandStreaming(ctx, "add", "."); err != nil {
-		return reportError(ctx, fmt.Errorf("git add .: %w", err))
+		return nil, reportError(ctx, fmt.Errorf("git add .: %w", err))
 	}
 
 	diffOutput, err := exec.Command("git", "diff", "--cached").CombinedOutput()
 	if err != nil {
-		return reportError(ctx, fmt.Errorf("git diff --cached: %w", err))
+		return nil, reportError(ctx, fmt.Errorf("git diff --cached: %w", err))
 	}
 
 	diff := string(diffOutput)
 	if strings.TrimSpace(diff) == "" {
-		return reportError(ctx, fmt.Errorf("no staged changes to commit; stage files with git add"))
+		return nil, reportError(ctx, fmt.Errorf("no staged changes to commit; stage files with git add"))
 	}
 
 	trimmedDiff, truncated := truncateDiffForCommit(diff)
@@ -341,22 +438,24 @@ func runCommit(ctx *snap.Context) error {
 
 	message, err := generateCommitMessage(ctx.Context(), apiKey, trimmedDiff, status, truncated)
 	if err != nil {
-		return reportError(ctx, err)
+		return nil, reportError(ctx, err)
 	}
 
 	message = strings.TrimSpace(trimMatchingQuotes(message))
 	if message == "" {
-		return reportError(ctx, fmt.Errorf("commit message is empty"))
+		return nil, reportError(ctx, fmt.Errorf("commit message is empty"))
 	}
 	paragraphs := splitCommitMessageParagraphs(message)
 	if len(paragraphs) == 0 {
-		return reportError(ctx, fmt.Errorf("commit message is empty after formatting"))
+		return nil, reportError(ctx, fmt.Errorf("commit message is empty after formatting"))
 	}
 
-	fmt.Fprintf(ctx.Stdout(), "Proposed commit message:\n%s\n\n", message)
+	return &commitPayload{message: message, paragraphs: paragraphs}, nil
+}
 
+func commitWithPayload(ctx *snap.Context, payload *commitPayload) error {
 	args := []string{"commit"}
-	for _, paragraph := range paragraphs {
+	for _, paragraph := range payload.paragraphs {
 		args = append(args, "-m", paragraph)
 	}
 
@@ -368,21 +467,99 @@ func runCommit(ctx *snap.Context) error {
 		return reportError(ctx, fmt.Errorf("git commit: %w", err))
 	}
 
-	fmt.Fprintf(ctx.Stdout(), "✔️ Committed with message: %s\n", paragraphs[0])
 	return nil
 }
 
-func runCommitPush(ctx *snap.Context) error {
-	if err := runCommit(ctx); err != nil {
-		return err
+func printProposedMessage(ctx *snap.Context, message string) {
+	fmt.Fprintf(ctx.Stdout(), "Proposed commit message:\n%s\n\n", message)
+}
+
+func printCommitSuccess(ctx *snap.Context, payload *commitPayload) {
+	if len(payload.paragraphs) == 0 {
+		return
+	}
+	fmt.Fprintf(ctx.Stdout(), "✔️ Committed with message: %s\n", payload.paragraphs[0])
+}
+
+func promptCommitConfirmation(ctx *snap.Context, message string) (string, bool, error) {
+	reader := bufio.NewReader(ctx.Stdin())
+	current := message
+
+	for {
+		fmt.Fprintln(ctx.Stdout(), strings.Repeat("─", 60))
+		fmt.Fprintln(ctx.Stdout(), "Review commit message:")
+		fmt.Fprintln(ctx.Stdout(), strings.Repeat("─", 60))
+		fmt.Fprintln(ctx.Stdout(), current)
+		fmt.Fprintln(ctx.Stdout(), strings.Repeat("─", 60))
+		fmt.Fprintln(ctx.Stdout(), "Options: [y] commit  [n] cancel  [e] edit message")
+		fmt.Fprint(ctx.Stdout(), "Choice [y/n/e]: ")
+
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return "", false, fmt.Errorf("reading choice: %w", err)
+		}
+
+		switch strings.ToLower(strings.TrimSpace(input)) {
+		case "y", "yes":
+			return current, true, nil
+		case "n", "no", "":
+			return current, false, nil
+		case "e", "edit":
+			edited, err := editCommitMessage(ctx, current)
+			if err != nil {
+				return "", false, fmt.Errorf("edit commit message: %w", err)
+			}
+			trimmed := strings.TrimSpace(edited)
+			if trimmed == "" {
+				fmt.Fprintln(ctx.Stdout(), "Edited message is empty; keeping previous message.")
+				continue
+			}
+			current = trimmed
+		default:
+			fmt.Fprintln(ctx.Stdout(), "Please choose y, n, or e.")
+		}
+	}
+}
+
+func editCommitMessage(ctx *snap.Context, current string) (string, error) {
+	tmpFile, err := os.CreateTemp("", "flow-commit-*.md")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(tmpFile.Name())
+
+	if _, err := tmpFile.WriteString(current + "\n"); err != nil {
+		tmpFile.Close()
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return "", err
 	}
 
-	if err := runGitCommandStreaming(ctx, "push"); err != nil {
-		return reportError(ctx, fmt.Errorf("git push: %w", err))
+	editor := findEditor()
+	cmd := exec.Command(editor, tmpFile.Name())
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return "", err
 	}
 
-	fmt.Fprintln(ctx.Stdout(), "✔️ Pushed")
-	return nil
+	content, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
+}
+
+func findEditor() string {
+	for _, env := range []string{"GIT_EDITOR", "VISUAL", "EDITOR"} {
+		if val := strings.TrimSpace(os.Getenv(env)); val != "" {
+			return val
+		}
+	}
+	return "vi"
 }
 
 // resolveOpenAIKey attempts to find an OpenAI key quickly without extra config.
@@ -414,7 +591,7 @@ func generateCommitMessage(parent context.Context, apiKey string, diff string, s
 	requestCtx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
 
-	systemPrompt := "You are an expert software engineer who writes clear, concise git commit messages. Use imperative mood, keep the subject line under 72 characters, and include an optional body with bullet points if helpful. Never wrap the message in quotes."
+	systemPrompt := "You are an expert software engineer who writes clear, concise git commit messages. Use imperative mood, keep the subject line under 72 characters, and include an optional body with bullet points if helpful. Never wrap the message in quotes. Never include secrets, credentials, or file contents from .env files, environment variables, keys, or other sensitive data—even if they appear in the diff."
 
 	var userPromptBuilder strings.Builder
 	userPromptBuilder.WriteString("Write a git commit message for the staged changes.\n\nGit diff:\n")
