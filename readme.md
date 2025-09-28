@@ -1,5 +1,7 @@
 # flow
 
+> CLI to do things fast
+
 ## Setup
 
 Currently this assumes it will put binary in `~/bin`. So create folder and add it to `$PATH`.
