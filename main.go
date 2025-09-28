@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/dzonerzy/go-snap/snap"
@@ -41,6 +43,11 @@ func main() {
 	app.Command("deploy", "Deploy the current project using task publish").
 		Action(func(ctx *snap.Context) error {
 			return runDeploy(ctx)
+		})
+
+	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
+		Action(func(ctx *snap.Context) error {
+			return runClone(ctx)
 		})
 
 	app.Command("gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed").
@@ -118,6 +125,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow deploy [project]")
 		return true
+	case "clone":
+		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow clone <github-url>")
+		return true
 	case "gitCheckout":
 		fmt.Fprintln(out, "Check out a branch from the remote, creating a local tracking branch if needed")
 		fmt.Fprintln(out)
@@ -144,6 +157,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Available Commands:")
 	fmt.Fprintln(out, "  help             Help about any command")
 	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
+	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  version          Reports the current version of flow")
@@ -159,6 +173,57 @@ func openCurrentDirectory(out io.Writer) error {
 	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func runClone(ctx *snap.Context) error {
+	if ctx.NArgs() != 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow clone <github-url>")
+		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	}
+
+	input := strings.TrimSpace(ctx.Arg(0))
+	if input == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow clone <github-url>")
+		return fmt.Errorf("github url cannot be empty")
+	}
+
+	owner, repo, cloneURL, err := parseGitHubCloneInfo(input)
+	if err != nil {
+		return err
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("determine home directory: %w", err)
+	}
+
+	targetDir := filepath.Join(homeDir, "gh", owner, repo)
+	parentDir := filepath.Dir(targetDir)
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", parentDir, err)
+	}
+
+	if info, err := os.Stat(targetDir); err == nil {
+		if info.IsDir() {
+			return fmt.Errorf("destination %s already exists", targetDir)
+		}
+		return fmt.Errorf("destination %s exists and is not a directory", targetDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("checking %s: %w", targetDir, err)
+	}
+
+	cmd := exec.Command("git", "clone", cloneURL, targetDir)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			fmt.Fprintln(ctx.Stderr(), trimmed)
+		}
+		return fmt.Errorf("git clone failed: %w", err)
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Cloned to %s\n", targetDir)
+	return nil
 }
 
 func runDeploy(ctx *snap.Context) error {
@@ -201,6 +266,62 @@ func runDeploy(ctx *snap.Context) error {
 
 	fmt.Fprintln(ctx.Stdout(), "✔️ Deployed")
 	return nil
+}
+
+func parseGitHubCloneInfo(input string) (string, string, string, error) {
+	switch {
+	case strings.HasPrefix(input, "git@"):
+		if !strings.HasPrefix(input, "git@github.com:") {
+			return "", "", "", fmt.Errorf("unsupported git host in %q", input)
+		}
+		path := strings.TrimPrefix(input, "git@github.com:")
+		owner, repo, err := splitOwnerRepo(path)
+		if err != nil {
+			return "", "", "", err
+		}
+		return owner, repo, input, nil
+	case strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://"):
+		u, err := url.Parse(input)
+		if err != nil {
+			return "", "", "", fmt.Errorf("parse url %q: %w", input, err)
+		}
+		if !strings.EqualFold(u.Host, "github.com") {
+			return "", "", "", fmt.Errorf("expected github.com host, got %s", u.Host)
+		}
+		owner, repo, err := splitOwnerRepo(u.Path)
+		if err != nil {
+			return "", "", "", err
+		}
+		cloneURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+		return owner, repo, cloneURL, nil
+	default:
+		owner, repo, err := splitOwnerRepo(input)
+		if err != nil {
+			return "", "", "", err
+		}
+		cloneURL := fmt.Sprintf("https://github.com/%s/%s", owner, repo)
+		return owner, repo, cloneURL, nil
+	}
+}
+
+func splitOwnerRepo(path string) (string, string, error) {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return "", "", fmt.Errorf("invalid GitHub repository path: %q", path)
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 2 {
+		return "", "", fmt.Errorf("invalid GitHub repository path: %q", path)
+	}
+	if len(parts) > 2 {
+		return "", "", fmt.Errorf("unexpected extra path components in %q", path)
+	}
+	owner := parts[0]
+	repo := strings.TrimSuffix(parts[1], ".git")
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("invalid GitHub repository path: %q", path)
+	}
+	return owner, repo, nil
 }
 
 func runGitCheckout(ctx *snap.Context) error {
