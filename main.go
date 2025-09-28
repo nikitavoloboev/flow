@@ -59,7 +59,7 @@ func handleTopLevel(args []string, out io.Writer) bool {
 	}
 
 	switch args[0] {
-	case "--help", "-h":
+	case "--help", "-h", "h":
 		printRootHelp(out)
 		return true
 	case "--version":
