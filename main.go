@@ -60,6 +60,11 @@ func main() {
 			return runCommit(ctx)
 		})
 
+	app.Command("commitPush", "Commit using GPT-5 nano and push the result to the tracked remote").
+		Action(func(ctx *snap.Context) error {
+			return runCommitPush(ctx)
+		})
+
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
 		Action(func(ctx *snap.Context) error {
 			return runClone(ctx)
@@ -146,6 +151,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow commit")
 		return true
+	case "commitPush":
+		fmt.Fprintln(out, "Generate a commit message, commit, and push to the default remote")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow commitPush")
+		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
 		fmt.Fprintln(out)
@@ -179,6 +190,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  help             Help about any command")
 	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
+	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -357,6 +369,19 @@ func runCommit(ctx *snap.Context) error {
 	}
 
 	fmt.Fprintf(ctx.Stdout(), "✔️ Committed with message: %s\n", paragraphs[0])
+	return nil
+}
+
+func runCommitPush(ctx *snap.Context) error {
+	if err := runCommit(ctx); err != nil {
+		return err
+	}
+
+	if err := runGitCommandStreaming(ctx, "push"); err != nil {
+		return reportError(ctx, fmt.Errorf("git push: %w", err))
+	}
+
+	fmt.Fprintln(ctx.Stdout(), "✔️ Pushed")
 	return nil
 }
 
