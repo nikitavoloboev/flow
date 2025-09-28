@@ -1,10 +1,12 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/dzonerzy/go-snap/snap"
 )
@@ -12,6 +14,7 @@ import (
 const (
 	flowVersion       = "1.0.0"
 	upgradeScriptPath = "/Users/nikiv/src/config/sh/upgrade-go-version.sh"
+	taskfilePath      = "Taskfile.yml"
 )
 
 func main() {
@@ -33,6 +36,16 @@ func main() {
 			}
 
 			return nil
+		})
+
+	app.Command("deploy", "Deploy the current project using task publish").
+		Action(func(ctx *snap.Context) error {
+			return runDeploy(ctx)
+		})
+
+	app.Command("gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed").
+		Action(func(ctx *snap.Context) error {
+			return runGitCheckout(ctx)
 		})
 
 	app.Command("version", "Reports the current version of flow").
@@ -99,6 +112,18 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow updateGoVersion")
 		return true
+	case "deploy":
+		fmt.Fprintln(out, "Deploy the current project using task publish")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow deploy [project]")
+		return true
+	case "gitCheckout":
+		fmt.Fprintln(out, "Check out a branch from the remote, creating a local tracking branch if needed")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow gitCheckout <branch>")
+		return true
 	case "version":
 		fmt.Fprintln(out, "Reports the current version of flow")
 		fmt.Fprintln(out)
@@ -118,6 +143,8 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Available Commands:")
 	fmt.Fprintln(out, "  help             Help about any command")
+	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
+	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  version          Reports the current version of flow")
 	fmt.Fprintln(out)
@@ -131,5 +158,203 @@ func openCurrentDirectory(out io.Writer) error {
 	cmd := exec.Command("open", ".")
 	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func runDeploy(ctx *snap.Context) error {
+	if ctx.NArgs() > 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow deploy [project]")
+		return fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs())
+	}
+
+	project := strings.TrimSpace(ctx.Arg(0))
+	if ctx.NArgs() == 0 {
+		project = ""
+	}
+
+	if _, err := os.Stat(taskfilePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%s not found", taskfilePath)
+		}
+		return fmt.Errorf("checking %s: %w", taskfilePath, err)
+	}
+
+	contents, err := os.ReadFile(taskfilePath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", taskfilePath, err)
+	}
+
+	if !strings.Contains(string(contents), "publish") {
+		return fmt.Errorf("%s does not define a publish task", taskfilePath)
+	}
+
+	if project != "" {
+		fmt.Fprintf(ctx.Stdout(), "Deploying %s via task publish...\n", project)
+	}
+
+	cmd := exec.Command("task", "publish")
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	return cmd.Run()
+}
+
+func runGitCheckout(ctx *snap.Context) error {
+	if ctx.NArgs() != 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow gitCheckout <branch>")
+		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	}
+
+	branchInput := strings.TrimSpace(ctx.Arg(0))
+	if branchInput == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow gitCheckout <branch>")
+		return fmt.Errorf("branch name cannot be empty")
+	}
+
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	remotes, err := listGitRemotes()
+	if err != nil {
+		return err
+	}
+
+	branchName := branchInput
+	preferredRemote := ""
+	if idx := strings.Index(branchInput, "/"); idx > 0 {
+		candidateRemote := branchInput[:idx]
+		remaining := branchInput[idx+1:]
+		if remaining != "" {
+			for _, r := range remotes {
+				if r == candidateRemote {
+					preferredRemote = candidateRemote
+					branchName = remaining
+					break
+				}
+			}
+		}
+	}
+
+	if branchName == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow gitCheckout <branch>")
+		return fmt.Errorf("branch name cannot be empty")
+	}
+
+	remote, err := selectGitRemote(remotes, preferredRemote)
+	if err != nil {
+		return err
+	}
+
+	if err := runGitCommandStreaming(ctx, "fetch", remote, branchName); err != nil {
+		return fmt.Errorf("git fetch %s %s: %w", remote, branchName, err)
+	}
+
+	exists, err := gitRefExists(branchName)
+	if err != nil {
+		return fmt.Errorf("check local branch %s: %w", branchName, err)
+	}
+	if exists {
+		return runGitCommandStreaming(ctx, "checkout", branchName)
+	}
+
+	remoteRef := fmt.Sprintf("%s/%s", remote, branchName)
+	remoteExists, err := gitRefExists(remoteRef)
+	if err != nil {
+		return fmt.Errorf("check remote branch %s: %w", remoteRef, err)
+	}
+	if !remoteExists {
+		return fmt.Errorf("remote branch %s not found", remoteRef)
+	}
+
+	return runGitCommandStreaming(ctx, "checkout", "-b", branchName, remoteRef)
+}
+
+func ensureGitRepository() error {
+	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return fmt.Errorf("%s", trimmed)
+		}
+		return fmt.Errorf("git rev-parse --is-inside-work-tree: %w", err)
+	}
+
+	if strings.TrimSpace(string(out)) != "true" {
+		return fmt.Errorf("not inside a git repository")
+	}
+
+	return nil
+}
+
+func listGitRemotes() ([]string, error) {
+	out, err := exec.Command("git", "remote").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git remote: %w", err)
+	}
+
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "" {
+		return nil, fmt.Errorf("no git remotes configured")
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	remotes := make([]string, 0, len(lines))
+	for _, line := range lines {
+		name := strings.TrimSpace(line)
+		if name != "" {
+			remotes = append(remotes, name)
+		}
+	}
+
+	if len(remotes) == 0 {
+		return nil, fmt.Errorf("no git remotes configured")
+	}
+
+	return remotes, nil
+}
+
+func selectGitRemote(remotes []string, preferred string) (string, error) {
+	if len(remotes) == 0 {
+		return "", fmt.Errorf("no git remotes configured")
+	}
+
+	if preferred != "" {
+		for _, r := range remotes {
+			if r == preferred {
+				return preferred, nil
+			}
+		}
+		return "", fmt.Errorf("git remote %q not found", preferred)
+	}
+
+	for _, r := range remotes {
+		if r == "origin" {
+			return r, nil
+		}
+	}
+
+	return remotes[0], nil
+}
+
+func gitRefExists(ref string) (bool, error) {
+	cmd := exec.Command("git", "rev-parse", "--verify", "--quiet", ref)
+	if err := cmd.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	return true, nil
+}
+
+func runGitCommandStreaming(ctx *snap.Context, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
 	return cmd.Run()
 }

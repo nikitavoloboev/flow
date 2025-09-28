@@ -27,6 +27,8 @@ Usage:
 
 Available Commands:
   help             Help about any command
+  deploy           Deploy the current project using task publish
+  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
   updateGoVersion  Upgrade Go using the workspace script
   version          Reports the current version of flow
 
