@@ -28,6 +28,7 @@ Usage:
 Available Commands:
   help             Help about any command
   deploy           Deploy the current project using task publish
+  commit           Generate a commit message with GPT-5 nano and create the commit
   clone            Clone a GitHub repository into ~/gh/<owner>/<repo>
   gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
   updateGoVersion  Upgrade Go using the workspace script

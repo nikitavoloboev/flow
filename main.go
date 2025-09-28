@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,14 +10,19 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/dzonerzy/go-snap/snap"
+	openai "github.com/openai/openai-go"
+	"github.com/openai/openai-go/shared"
 )
 
 const (
-	flowVersion       = "1.0.0"
-	upgradeScriptPath = "/Users/nikiv/src/config/sh/upgrade-go-version.sh"
-	taskfilePath      = "Taskfile.yml"
+	flowVersion        = "1.0.0"
+	upgradeScriptPath  = "/Users/nikiv/src/config/sh/upgrade-go-version.sh"
+	taskfilePath       = "Taskfile.yml"
+	commitModelName    = "gpt-5-nano"
+	maxCommitDiffRunes = 12000
 )
 
 func main() {
@@ -43,6 +49,11 @@ func main() {
 	app.Command("deploy", "Deploy the current project using task publish").
 		Action(func(ctx *snap.Context) error {
 			return runDeploy(ctx)
+		})
+
+	app.Command("commit", "Generate a commit message with GPT-5 nano and create the commit").
+		Action(func(ctx *snap.Context) error {
+			return runCommit(ctx)
 		})
 
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
@@ -125,6 +136,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow deploy [project]")
 		return true
+	case "commit":
+		fmt.Fprintln(out, "Generate a commit message with GPT-5 nano and create the commit")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow commit")
+		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
 		fmt.Fprintln(out)
@@ -157,6 +174,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "Available Commands:")
 	fmt.Fprintln(out, "  help             Help about any command")
 	fmt.Fprintln(out, "  deploy           Deploy the current project using task publish")
+	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -266,6 +284,168 @@ func runDeploy(ctx *snap.Context) error {
 
 	fmt.Fprintln(ctx.Stdout(), "✔️ Deployed")
 	return nil
+}
+
+func runCommit(ctx *snap.Context) error {
+	if ctx.NArgs() != 0 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow commit")
+		return fmt.Errorf("commit does not accept positional arguments")
+	}
+
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) == "" {
+		return fmt.Errorf("OPENAI_API_KEY is not set")
+	}
+
+	diffOutput, err := exec.Command("git", "diff", "--cached").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %w", err)
+	}
+
+	diff := string(diffOutput)
+	if strings.TrimSpace(diff) == "" {
+		return fmt.Errorf("no staged changes to commit; stage files with git add")
+	}
+
+	trimmedDiff, truncated := truncateDiffForCommit(diff)
+
+	statusOutput, statusErr := exec.Command("git", "status", "--short").CombinedOutput()
+	status := ""
+	if statusErr == nil {
+		status = string(statusOutput)
+	}
+
+	message, err := generateCommitMessage(ctx.Context(), trimmedDiff, status, truncated)
+	if err != nil {
+		return err
+	}
+
+	message = strings.TrimSpace(trimMatchingQuotes(message))
+	if message == "" {
+		return fmt.Errorf("commit message is empty")
+	}
+	paragraphs := splitCommitMessageParagraphs(message)
+	if len(paragraphs) == 0 {
+		return fmt.Errorf("commit message is empty after formatting")
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "Proposed commit message:\n%s\n\n", message)
+
+	args := []string{"commit"}
+	for _, paragraph := range paragraphs {
+		args = append(args, "-m", paragraph)
+	}
+
+	cmd := exec.Command("git", args...)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Committed with message: %s\n", paragraphs[0])
+	return nil
+}
+
+func generateCommitMessage(parent context.Context, diff string, status string, truncated bool) (string, error) {
+	client := openai.NewClient()
+
+	requestCtx, cancel := context.WithTimeout(parent, 45*time.Second)
+	defer cancel()
+
+	systemPrompt := "You are an expert software engineer who writes clear, concise git commit messages. Use imperative mood, keep the subject line under 72 characters, and include an optional body with bullet points if helpful. Never wrap the message in quotes."
+
+	var userPromptBuilder strings.Builder
+	userPromptBuilder.WriteString("Write a git commit message for the staged changes.\n\nGit diff:\n")
+	userPromptBuilder.WriteString(diff)
+	if truncated {
+		userPromptBuilder.WriteString("\n\n[Diff truncated to fit within prompt]")
+	}
+
+	if s := strings.TrimSpace(status); s != "" {
+		userPromptBuilder.WriteString("\n\nGit status --short:\n")
+		userPromptBuilder.WriteString(s)
+	}
+
+	resp, err := client.Chat.Completions.New(requestCtx, openai.ChatCompletionNewParams{
+		Model:       shared.ChatModel(commitModelName),
+		Temperature: openai.Float(0.2),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			{
+				OfSystem: &openai.ChatCompletionSystemMessageParam{
+					Content: openai.ChatCompletionSystemMessageParamContentUnion{OfString: openai.String(systemPrompt)},
+				},
+			},
+			{
+				OfUser: &openai.ChatCompletionUserMessageParam{
+					Content: openai.ChatCompletionUserMessageParamContentUnion{OfString: openai.String(userPromptBuilder.String())},
+				},
+			},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("generate commit message: %w", err)
+	}
+
+	if resp == nil || len(resp.Choices) == 0 {
+		return "", fmt.Errorf("model returned no commit message choices")
+	}
+
+	message := strings.TrimSpace(resp.Choices[0].Message.Content)
+	if message == "" {
+		return "", fmt.Errorf("model returned an empty commit message")
+	}
+
+	return message, nil
+}
+
+func truncateDiffForCommit(diff string) (string, bool) {
+	runes := []rune(diff)
+	if len(runes) <= maxCommitDiffRunes {
+		return diff, false
+	}
+
+	trimmed := string(runes[:maxCommitDiffRunes])
+	return trimmed + fmt.Sprintf("\n\n[Diff truncated to the first %d characters]", maxCommitDiffRunes), true
+}
+
+func splitCommitMessageParagraphs(message string) []string {
+	lines := strings.Split(message, "\n")
+	var paragraphs []string
+	var current []string
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			if len(current) > 0 {
+				paragraphs = append(paragraphs, strings.Join(current, "\n"))
+				current = nil
+			}
+			continue
+		}
+
+		current = append(current, strings.TrimRight(line, " \t"))
+	}
+
+	if len(current) > 0 {
+		paragraphs = append(paragraphs, strings.Join(current, "\n"))
+	}
+
+	return paragraphs
+}
+
+func trimMatchingQuotes(message string) string {
+	if len(message) >= 2 {
+		first := message[0]
+		last := message[len(message)-1]
+		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+			return message[1 : len(message)-1]
+		}
+	}
+	return message
 }
 
 func parseGitHubCloneInfo(input string) (string, string, string, error) {
