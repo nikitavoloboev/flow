@@ -15,7 +15,7 @@ const (
 )
 
 func main() {
-	app := snap.New("flow", "flow is tool to do things fast").
+	app := snap.New("flow", "flow is CLI to do things fast").
 		Version(flowVersion).
 		DisableHelp()
 
@@ -111,7 +111,7 @@ func printCommandHelp(name string, out io.Writer) bool {
 }
 
 func printRootHelp(out io.Writer) {
-	fmt.Fprintln(out, "flow is tool to do things fast")
+	fmt.Fprintln(out, "flow is CLI to do things fast")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  flow [command]")
