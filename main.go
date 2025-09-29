@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dzonerzy/go-snap/snap"
 	openai "github.com/openai/openai-go"
@@ -71,6 +72,11 @@ func main() {
 			return runCommitReviewAndPush(ctx)
 		})
 
+	app.Command("branch", "Create a git branch from the clipboard name").
+		Action(func(ctx *snap.Context) error {
+			return runBranch(ctx)
+		})
+
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
 		Action(func(ctx *snap.Context) error {
 			return runClone(ctx)
@@ -81,7 +87,7 @@ func main() {
 			return runGitCheckout(ctx)
 		})
 
-	app.Command("youtubeToSound", "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp").
+	app.Command("youtubeToSound", "Download audio into ~/.flow/youtube-sound using yt-dlp").
 		Action(func(ctx *snap.Context) error {
 			return runYoutubeToSound(ctx)
 		})
@@ -174,6 +180,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow commitReviewAndPush")
 		return true
+	case "branch":
+		fmt.Fprintln(out, "Create a git branch from the clipboard name")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow branch")
+		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
 		fmt.Fprintln(out)
@@ -190,7 +202,9 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  flow youtubeToSound <youtube-url>")
+		fmt.Fprintln(out, "  flow youtubeToSound <youtube-url> [yt-dlp-args...]")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Any additional arguments are forwarded directly to yt-dlp.")
 		return true
 	case "version":
 		fmt.Fprintln(out, "Reports the current version of flow")
@@ -215,6 +229,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
 	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
+	fmt.Fprintln(out, "  branch           Create a git branch from the clipboard name")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -232,6 +247,122 @@ func openCurrentDirectory(out io.Writer) error {
 	cmd.Stdout = out
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func runBranch(ctx *snap.Context) error {
+	if ctx.NArgs() != 0 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow branch")
+		return fmt.Errorf("expected 0 arguments, got %d", ctx.NArgs())
+	}
+
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	rawClipboard, err := readClipboardText()
+	if err != nil {
+		return fmt.Errorf("read clipboard: %w", err)
+	}
+
+	branchName := extractBranchName(rawClipboard)
+	if branchName == "" {
+		fmt.Fprintln(ctx.Stderr(), "Clipboard does not contain a branch name")
+		return fmt.Errorf("clipboard value is empty")
+	}
+
+	if !strings.Contains(branchName, "/") {
+		fmt.Fprintln(ctx.Stderr(), "Clipboard branch must contain a '/' (e.g. owner/feature)")
+		return fmt.Errorf("clipboard branch %q missing slash", branchName)
+	}
+
+	if !containsDigit(branchName) {
+		fmt.Fprintln(ctx.Stderr(), "Clipboard branch must include a number (e.g. ticket id)")
+		return fmt.Errorf("clipboard branch %q missing number", branchName)
+	}
+
+	if strings.ContainsAny(branchName, " \t") {
+		fmt.Fprintln(ctx.Stderr(), "Clipboard branch cannot contain spaces; replace them with '-' if needed")
+		return fmt.Errorf("clipboard branch %q contains whitespace", branchName)
+	}
+
+	exists, err := gitRefExists(branchName)
+	if err != nil {
+		return fmt.Errorf("check local branch %s: %w", branchName, err)
+	}
+
+	if exists {
+		if err := runGitCommandStreaming(ctx, "checkout", branchName); err != nil {
+			return fmt.Errorf("git checkout %s: %w", branchName, err)
+		}
+		fmt.Fprintf(ctx.Stdout(), "✔️ Switched to %s\n", branchName)
+		return nil
+	}
+
+	if err := runGitCommandStreaming(ctx, "checkout", "-b", branchName); err != nil {
+		return fmt.Errorf("git checkout -b %s: %w", branchName, err)
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Created and switched to %s\n", branchName)
+	return nil
+}
+
+func extractBranchName(raw string) string {
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		trimmed := strings.TrimSpace(scanner.Text())
+		if trimmed != "" {
+			return strings.Trim(trimmed, "\"'")
+		}
+	}
+
+	return strings.Trim(strings.TrimSpace(raw), "\"'")
+}
+
+func readClipboardText() (string, error) {
+	type clipCommand struct {
+		name string
+		args []string
+	}
+
+	candidates := []clipCommand{
+		{name: "pbpaste"},
+		{name: "wl-paste"},
+		{name: "xclip", args: []string{"-selection", "clipboard", "-o"}},
+	}
+
+	sawCommand := false
+	var lastErr error
+	for _, candidate := range candidates {
+		if _, err := exec.LookPath(candidate.name); err != nil {
+			continue
+		}
+		sawCommand = true
+		cmd := exec.Command(candidate.name, candidate.args...)
+		output, err := cmd.Output()
+		if err != nil {
+			lastErr = fmt.Errorf("%s: %w", candidate.name, err)
+			continue
+		}
+		return string(output), nil
+	}
+
+	if !sawCommand {
+		return "", fmt.Errorf("no clipboard utility found (tried pbpaste, wl-paste, xclip)")
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+
+	return "", fmt.Errorf("clipboard appears to be empty")
+}
+
+func containsDigit(s string) bool {
+	for _, r := range s {
+		if unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
 }
 
 func runClone(ctx *snap.Context) error {
@@ -328,14 +459,14 @@ func runDeploy(ctx *snap.Context) error {
 }
 
 func runYoutubeToSound(ctx *snap.Context) error {
-	if ctx.NArgs() != 1 {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url>")
-		return reportError(ctx, fmt.Errorf("expected 1 argument, got %d", ctx.NArgs()))
+	if ctx.NArgs() < 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url> [yt-dlp-args...]")
+		return reportError(ctx, fmt.Errorf("expected at least 1 argument, got %d", ctx.NArgs()))
 	}
 
 	videoURL := strings.TrimSpace(ctx.Arg(0))
 	if videoURL == "" {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url>")
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url> [yt-dlp-args...]")
 		return reportError(ctx, fmt.Errorf("youtube url cannot be empty"))
 	}
 
@@ -359,7 +490,26 @@ func runYoutubeToSound(ctx *snap.Context) error {
 	}
 
 	outputTemplate := filepath.Join(targetDir, "%(title)s.%(ext)s")
-	cmd := exec.Command(downloader, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--no-playlist", "-o", outputTemplate, videoURL)
+	args := []string{"--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--no-playlist", "-o", outputTemplate}
+	if ctx.NArgs() > 1 {
+		extra := ctx.Args()[1:]
+		for _, raw := range extra {
+			trimmed := strings.TrimSpace(raw)
+			if trimmed != "" {
+				args = append(args, trimmed)
+			}
+		}
+	}
+
+	defaultBrowser := strings.TrimSpace(os.Getenv("FLOW_YOUTUBE_COOKIES_BROWSER"))
+	if defaultBrowser == "" {
+		defaultBrowser = "safari"
+	}
+	if !strings.EqualFold(defaultBrowser, "none") && !containsCookiesArgument(args) {
+		args = append(args, "--cookies-from-browser", defaultBrowser)
+	}
+	args = append(args, videoURL)
+	cmd := exec.Command(downloader, args...)
 	cmd.Stdout = ctx.Stdout()
 	cmd.Stderr = ctx.Stderr()
 	cmd.Stdin = ctx.Stdin()
@@ -369,6 +519,15 @@ func runYoutubeToSound(ctx *snap.Context) error {
 
 	fmt.Fprintf(ctx.Stdout(), "✔️ Audio saved to %s\n", targetDir)
 	return nil
+}
+
+func containsCookiesArgument(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--cookies-from-browser") || strings.HasPrefix(arg, "--cookies") {
+			return true
+		}
+	}
+	return false
 }
 
 type commitPayload struct {

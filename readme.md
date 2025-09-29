@@ -31,6 +31,7 @@ Available Commands:
   commit           Generate a commit message with GPT-5 nano and create the commit
   commitPush       Generate a commit message, commit, and push to the default remote
   commitReviewAndPush Generate a commit message, review it interactively, commit, and push
+  branch           Create a git branch from the clipboard name
   clone            Clone a GitHub repository into ~/gh/<owner>/<repo>
   gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
   updateGoVersion  Upgrade Go using the workspace script
@@ -44,6 +45,8 @@ Use "flow [command] --help" for more information about a command.
 ```
 
 For `f commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.
+
+For `f youtubeToSound`, the CLI now automatically passes `--cookies-from-browser` using Safari cookies. Override this by setting `FLOW_YOUTUBE_COOKIES_BROWSER` (e.g. `firefox`), set it to `none` to skip cookies entirely, or pass your own `--cookies*` flags after the URL—they are forwarded directly to `yt-dlp`.
 
 ## Contributing
 
