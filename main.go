@@ -81,6 +81,11 @@ func main() {
 			return runGitCheckout(ctx)
 		})
 
+	app.Command("youtubeToSound", "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp").
+		Action(func(ctx *snap.Context) error {
+			return runYoutubeToSound(ctx)
+		})
+
 	app.Command("version", "Reports the current version of flow").
 		Action(func(ctx *snap.Context) error {
 			fmt.Fprintln(ctx.Stdout(), flowVersion)
@@ -181,6 +186,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow gitCheckout <branch>")
 		return true
+	case "youtubeToSound":
+		fmt.Fprintln(out, "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow youtubeToSound <youtube-url>")
+		return true
 	case "version":
 		fmt.Fprintln(out, "Reports the current version of flow")
 		fmt.Fprintln(out)
@@ -207,6 +218,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
+	fmt.Fprintln(out, "  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
 	fmt.Fprintln(out, "  version          Reports the current version of flow")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Flags:")
@@ -315,6 +327,50 @@ func runDeploy(ctx *snap.Context) error {
 	return nil
 }
 
+func runYoutubeToSound(ctx *snap.Context) error {
+	if ctx.NArgs() != 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url>")
+		return reportError(ctx, fmt.Errorf("expected 1 argument, got %d", ctx.NArgs()))
+	}
+
+	videoURL := strings.TrimSpace(ctx.Arg(0))
+	if videoURL == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url>")
+		return reportError(ctx, fmt.Errorf("youtube url cannot be empty"))
+	}
+
+	if _, err := url.ParseRequestURI(videoURL); err != nil {
+		return reportError(ctx, fmt.Errorf("validate url %q: %w", videoURL, err))
+	}
+
+	downloader := "yt-dlp"
+	if _, err := exec.LookPath(downloader); err != nil {
+		return reportError(ctx, fmt.Errorf("%s not found in PATH: %w", downloader, err))
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("determine home directory: %w", err))
+	}
+
+	targetDir := filepath.Join(homeDir, ".flow", "youtube-sound")
+	if err := os.MkdirAll(targetDir, 0o755); err != nil {
+		return reportError(ctx, fmt.Errorf("create directory %s: %w", targetDir, err))
+	}
+
+	outputTemplate := filepath.Join(targetDir, "%(title)s.%(ext)s")
+	cmd := exec.Command(downloader, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0", "--no-playlist", "-o", outputTemplate, videoURL)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return reportError(ctx, fmt.Errorf("%s failed: %w", downloader, err))
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Audio saved to %s\n", targetDir)
+	return nil
+}
+
 type commitPayload struct {
 	message    string
 	paragraphs []string
@@ -362,7 +418,6 @@ func runCommitPush(ctx *snap.Context) error {
 	fmt.Fprintln(ctx.Stdout(), "✔️ Pushed")
 	return nil
 }
-
 
 func runCommitReviewAndPush(ctx *snap.Context) error {
 	if ctx.NArgs() != 0 {
@@ -820,17 +875,36 @@ func runGitCheckout(ctx *snap.Context) error {
 		return err
 	}
 
-	branchName := branchInput
-	preferredRemote := ""
-	if idx := strings.Index(branchInput, "/"); idx > 0 {
-		candidateRemote := branchInput[:idx]
-		remaining := branchInput[idx+1:]
-		if remaining != "" {
-			for _, r := range remotes {
-				if r == candidateRemote {
-					preferredRemote = candidateRemote
-					branchName = remaining
-					break
+	var (
+		branchName           string
+		preferredRemote      string
+		branchCandidates     []string
+		branchDerivedFromURL bool
+	)
+
+	if strings.HasPrefix(branchInput, "http://") || strings.HasPrefix(branchInput, "https://") {
+		candidates, err := parseGitHubTreeURL(branchInput)
+		if err != nil {
+			return fmt.Errorf("parse GitHub tree URL: %w", err)
+		}
+		branchCandidates = candidates
+		branchName = branchCandidates[0]
+		branchDerivedFromURL = true
+	} else {
+		branchName = branchInput
+		branchCandidates = []string{branchName}
+
+		if idx := strings.Index(branchInput, "/"); idx > 0 {
+			candidateRemote := branchInput[:idx]
+			remaining := branchInput[idx+1:]
+			if remaining != "" {
+				for _, r := range remotes {
+					if r == candidateRemote {
+						preferredRemote = candidateRemote
+						branchName = remaining
+						branchCandidates[0] = remaining
+						break
+					}
 				}
 			}
 		}
@@ -844,6 +918,14 @@ func runGitCheckout(ctx *snap.Context) error {
 	remote, err := selectGitRemote(remotes, preferredRemote)
 	if err != nil {
 		return err
+	}
+
+	if branchDerivedFromURL && len(branchCandidates) > 0 {
+		selected, err := pickBranchCandidateForRemote(remote, branchCandidates)
+		if err != nil {
+			return err
+		}
+		branchName = selected
 	}
 
 	if err := runGitCommandStreaming(ctx, "fetch", remote, branchName); err != nil {
@@ -868,6 +950,92 @@ func runGitCheckout(ctx *snap.Context) error {
 	}
 
 	return runGitCommandStreaming(ctx, "checkout", "-b", branchName, remoteRef)
+}
+
+func parseGitHubTreeURL(raw string) ([]string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse url %q: %w", raw, err)
+	}
+
+	host := strings.ToLower(u.Host)
+	if host != "github.com" && host != "www.github.com" {
+		return nil, fmt.Errorf("expected github.com host, got %s", u.Host)
+	}
+
+	escapedPath := u.EscapedPath()
+	trimmed := strings.Trim(escapedPath, "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 4 || !strings.EqualFold(parts[2], "tree") {
+		return nil, fmt.Errorf("unsupported GitHub tree URL path %q", u.Path)
+	}
+
+	branchParts := parts[3:]
+	if len(branchParts) == 0 {
+		return nil, fmt.Errorf("branch name missing in GitHub tree URL")
+	}
+
+	seen := make(map[string]struct{})
+	candidates := make([]string, 0, len(branchParts)+1)
+	addCandidate := func(candidate string) {
+		if candidate == "" {
+			return
+		}
+		if _, ok := seen[candidate]; ok {
+			return
+		}
+		seen[candidate] = struct{}{}
+		candidates = append(candidates, candidate)
+	}
+
+	if ref := u.Query().Get("ref"); ref != "" {
+		if decoded, err := url.PathUnescape(ref); err == nil {
+			addCandidate(decoded)
+		}
+	}
+
+	for i := 1; i <= len(branchParts); i++ {
+		joined := strings.Join(branchParts[:i], "/")
+		decoded, err := url.PathUnescape(joined)
+		if err != nil {
+			continue
+		}
+		addCandidate(decoded)
+	}
+
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("could not determine branch name from GitHub tree URL")
+	}
+
+	return candidates, nil
+}
+
+func pickBranchCandidateForRemote(remote string, candidates []string) (string, error) {
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no branch candidates supplied")
+	}
+
+	for _, candidate := range candidates {
+		hasBranch, err := gitRemoteHasBranch(remote, candidate)
+		if err != nil {
+			return "", err
+		}
+		if hasBranch {
+			return candidate, nil
+		}
+	}
+
+	return candidates[0], nil
+}
+
+func gitRemoteHasBranch(remote, branch string) (bool, error) {
+	cmd := exec.Command("git", "ls-remote", "--heads", remote, branch)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("git ls-remote %s %s: %w", remote, branch, err)
+	}
+
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 func ensureGitRepository() error {
