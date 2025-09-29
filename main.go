@@ -113,10 +113,7 @@ func main() {
 
 func handleTopLevel(args []string, out io.Writer) bool {
 	if len(args) == 0 {
-		if err := openCurrentDirectory(out); err != nil {
-			fmt.Fprintf(out, "open . failed: %v\n", err)
-			printRootHelp(out)
-		}
+		printRootHelp(out)
 		return true
 	}
 
@@ -254,13 +251,6 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  -h, --help   help for flow")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Use \"flow [command] --help\" for more information about a command.")
-}
-
-func openCurrentDirectory(out io.Writer) error {
-	cmd := exec.Command("open", ".")
-	cmd.Stdout = out
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func runBranchFromClipboard(ctx *snap.Context) error {
