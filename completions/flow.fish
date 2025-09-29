@@ -10,6 +10,7 @@ complete -c flow -n '__fish_use_subcommand' -f -a commitPush -d 'Generate a comm
 complete -c flow -n '__fish_use_subcommand' -f -a commitReviewAndPush -d 'Review commit message interactively then push'
 complete -c flow -n '__fish_use_subcommand' -f -a branchFromClipboard -d 'Create a branch from the clipboard name'
 complete -c flow -n '__fish_use_subcommand' -f -a clone -d 'Clone a GitHub repository into ~/gh/<owner>/<repo>'
+complete -c flow -n '__fish_use_subcommand' -f -a cloneAndOpen -d 'Clone a GitHub repository and open it in Cursor'
 complete -c flow -n '__fish_use_subcommand' -f -a gitCheckout -d 'Check out a remote branch locally'
 complete -c flow -n '__fish_use_subcommand' -f -a version -d 'Reports the current version of flow'
 
@@ -20,5 +21,6 @@ complete -c flow -n '__fish_seen_subcommand_from help' -f -a commitPush -d 'Gene
 complete -c flow -n '__fish_seen_subcommand_from help' -f -a commitReviewAndPush -d 'Review commit message interactively then push'
 complete -c flow -n '__fish_seen_subcommand_from help' -f -a branchFromClipboard -d 'Create a branch from the clipboard name'
 complete -c flow -n '__fish_seen_subcommand_from help' -f -a clone -d 'Clone a GitHub repository into ~/gh/<owner>/<repo>'
+complete -c flow -n '__fish_seen_subcommand_from help' -f -a cloneAndOpen -d 'Clone a GitHub repository and open it in Cursor'
 complete -c flow -n '__fish_seen_subcommand_from help' -f -a gitCheckout -d 'Check out a remote branch locally'
 complete -c flow -n '__fish_seen_subcommand_from help' -f -a version -d 'Reports the current version of flow'

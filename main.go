@@ -82,6 +82,11 @@ func main() {
 			return runClone(ctx)
 		})
 
+	app.Command("cloneAndOpen", "Clone a GitHub repository and open it in Cursor").
+		Action(func(ctx *snap.Context) error {
+			return runCloneAndOpen(ctx)
+		})
+
 	app.Command("gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed").
 		Action(func(ctx *snap.Context) error {
 			return runGitCheckout(ctx)
@@ -192,6 +197,12 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow clone <github-url>")
 		return true
+	case "cloneAndOpen":
+		fmt.Fprintln(out, "Clone a GitHub repository and open it in Cursor")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintln(out, "  flow cloneAndOpen <github-url>")
+		return true
 	case "gitCheckout":
 		fmt.Fprintln(out, "Check out a branch from the remote, creating a local tracking branch if needed")
 		fmt.Fprintln(out)
@@ -231,6 +242,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
 	fmt.Fprintln(out, "  branchFromClipboard Create a git branch from the clipboard name")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
+	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
@@ -377,29 +389,66 @@ func runClone(ctx *snap.Context) error {
 		return fmt.Errorf("github url cannot be empty")
 	}
 
-	owner, repo, cloneURL, err := parseGitHubCloneInfo(input)
+	targetDir, err := cloneRepository(ctx, input)
 	if err != nil {
 		return err
 	}
 
+	fmt.Fprintf(ctx.Stdout(), "✔️ Cloned to %s\n", targetDir)
+	return nil
+}
+
+func runCloneAndOpen(ctx *snap.Context) error {
+	if ctx.NArgs() != 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen <github-url>")
+		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	}
+
+	input := strings.TrimSpace(ctx.Arg(0))
+	if input == "" {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen <github-url>")
+		return fmt.Errorf("github url cannot be empty")
+	}
+
+	targetDir, err := cloneRepository(ctx, input)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Cloned to %s\n", targetDir)
+
+	if err := openInCursor(ctx, targetDir); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Opened %s in Cursor\n", targetDir)
+	return nil
+}
+
+func cloneRepository(ctx *snap.Context, input string) (string, error) {
+	owner, repo, cloneURL, err := parseGitHubCloneInfo(input)
+	if err != nil {
+		return "", err
+	}
+
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("determine home directory: %w", err)
+		return "", fmt.Errorf("determine home directory: %w", err)
 	}
 
 	targetDir := filepath.Join(homeDir, "gh", owner, repo)
 	parentDir := filepath.Dir(targetDir)
 	if err := os.MkdirAll(parentDir, 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", parentDir, err)
+		return "", fmt.Errorf("creating %s: %w", parentDir, err)
 	}
 
 	if info, err := os.Stat(targetDir); err == nil {
 		if info.IsDir() {
-			return fmt.Errorf("destination %s already exists", targetDir)
+			return "", fmt.Errorf("destination %s already exists", targetDir)
 		}
-		return fmt.Errorf("destination %s exists and is not a directory", targetDir)
+		return "", fmt.Errorf("destination %s exists and is not a directory", targetDir)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("checking %s: %w", targetDir, err)
+		return "", fmt.Errorf("checking %s: %w", targetDir, err)
 	}
 
 	cmd := exec.Command("git", "clone", cloneURL, targetDir)
@@ -409,10 +458,26 @@ func runClone(ctx *snap.Context) error {
 		if trimmed != "" {
 			fmt.Fprintln(ctx.Stderr(), trimmed)
 		}
-		return fmt.Errorf("git clone failed: %w", err)
+		return "", fmt.Errorf("git clone failed: %w", err)
 	}
 
-	fmt.Fprintf(ctx.Stdout(), "✔️ Cloned to %s\n", targetDir)
+	return targetDir, nil
+}
+
+func openInCursor(ctx *snap.Context, path string) error {
+	cursorApp := "/Applications/Cursor.app"
+	if _, err := os.Stat(cursorApp); err != nil {
+		return fmt.Errorf("Cursor.app not found at %s: %w", cursorApp, err)
+	}
+
+	cmd := exec.Command("open", "-a", cursorApp, path)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("open Cursor: %w", err)
+	}
+
 	return nil
 }
 
