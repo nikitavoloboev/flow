@@ -72,9 +72,9 @@ func main() {
 			return runCommitReviewAndPush(ctx)
 		})
 
-	app.Command("branch", "Create a git branch from the clipboard name").
+	app.Command("branchFromClipboard", "Create a git branch from the clipboard name").
 		Action(func(ctx *snap.Context) error {
-			return runBranch(ctx)
+			return runBranchFromClipboard(ctx)
 		})
 
 	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
@@ -180,11 +180,11 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintln(out, "  flow commitReviewAndPush")
 		return true
-	case "branch":
+	case "branchFromClipboard":
 		fmt.Fprintln(out, "Create a git branch from the clipboard name")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  flow branch")
+		fmt.Fprintln(out, "  flow branchFromClipboard")
 		return true
 	case "clone":
 		fmt.Fprintln(out, "Clone a GitHub repository into ~/gh/<owner>/<repo>")
@@ -229,7 +229,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
 	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
-	fmt.Fprintln(out, "  branch           Create a git branch from the clipboard name")
+	fmt.Fprintln(out, "  branchFromClipboard Create a git branch from the clipboard name")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
@@ -249,9 +249,9 @@ func openCurrentDirectory(out io.Writer) error {
 	return cmd.Run()
 }
 
-func runBranch(ctx *snap.Context) error {
+func runBranchFromClipboard(ctx *snap.Context) error {
 	if ctx.NArgs() != 0 {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow branch")
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow branchFromClipboard")
 		return fmt.Errorf("expected 0 arguments, got %d", ctx.NArgs())
 	}
 

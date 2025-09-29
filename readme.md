@@ -31,7 +31,7 @@ Available Commands:
   commit           Generate a commit message with GPT-5 nano and create the commit
   commitPush       Generate a commit message, commit, and push to the default remote
   commitReviewAndPush Generate a commit message, review it interactively, commit, and push
-  branch           Create a git branch from the clipboard name
+  branchFromClipboard Create a git branch from the clipboard name
   clone            Clone a GitHub repository into ~/gh/<owner>/<repo>
   gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
   updateGoVersion  Upgrade Go using the workspace script
