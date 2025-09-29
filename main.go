@@ -201,7 +201,9 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Clone a GitHub repository and open it in Cursor")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  flow cloneAndOpen <github-url>")
+		fmt.Fprintln(out, "  flow cloneAndOpen [github-url]")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Without an argument the command uses the frontmost Safari tab URL.")
 		return true
 	case "gitCheckout":
 		fmt.Fprintln(out, "Check out a branch from the remote, creating a local tracking branch if needed")
@@ -242,7 +244,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
 	fmt.Fprintln(out, "  branchFromClipboard Create a git branch from the clipboard name")
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
-	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor")
+	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor (Safari tab optional)")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
@@ -399,15 +401,26 @@ func runClone(ctx *snap.Context) error {
 }
 
 func runCloneAndOpen(ctx *snap.Context) error {
-	if ctx.NArgs() != 1 {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen <github-url>")
-		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	if ctx.NArgs() > 1 {
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen [github-url]")
+		return fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs())
 	}
 
-	input := strings.TrimSpace(ctx.Arg(0))
-	if input == "" {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen <github-url>")
-		return fmt.Errorf("github url cannot be empty")
+	var input string
+	if ctx.NArgs() == 1 {
+		input = strings.TrimSpace(ctx.Arg(0))
+		if input == "" {
+			fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen [github-url]")
+			return fmt.Errorf("github url cannot be empty")
+		}
+	} else {
+		safariURL, err := activeSafariURL()
+		if err != nil {
+			fmt.Fprintln(ctx.Stderr(), "Usage: flow cloneAndOpen [github-url]")
+			return fmt.Errorf("determine Safari URL: %w", err)
+		}
+		input = safariURL
+		fmt.Fprintf(ctx.Stdout(), "ℹ️ Using Safari URL %s\n", input)
 	}
 
 	targetDir, err := cloneRepository(ctx, input)
@@ -479,6 +492,32 @@ func openInCursor(ctx *snap.Context, path string) error {
 	}
 
 	return nil
+}
+
+func activeSafariURL() (string, error) {
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return "", fmt.Errorf("osascript not found in PATH: %w", err)
+	}
+
+	script := `tell application "Safari"
+	if it is running then
+		if exists front document then
+			return URL of front document
+		end if
+	end if
+end tell`
+	cmd := exec.Command("osascript", "-e", script)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("osascript Safari URL: %w", err)
+	}
+
+	url := strings.TrimSpace(string(output))
+	if url == "" {
+		return "", fmt.Errorf("Safari has no active tab URL")
+	}
+
+	return url, nil
 }
 
 func runDeploy(ctx *snap.Context) error {
