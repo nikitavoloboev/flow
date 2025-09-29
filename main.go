@@ -212,8 +212,9 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintln(out, "  flow youtubeToSound <youtube-url> [yt-dlp-args...]")
+		fmt.Fprintln(out, "  flow youtubeToSound [youtube-url] [yt-dlp-args...]")
 		fmt.Fprintln(out)
+		fmt.Fprintln(out, "When no URL is provided, the command uses the frontmost Safari tab.")
 		fmt.Fprintln(out, "Any additional arguments are forwarded directly to yt-dlp.")
 		return true
 	case "version":
@@ -553,14 +554,23 @@ func runDeploy(ctx *snap.Context) error {
 }
 
 func runYoutubeToSound(ctx *snap.Context) error {
-	if ctx.NArgs() < 1 {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url> [yt-dlp-args...]")
-		return reportError(ctx, fmt.Errorf("expected at least 1 argument, got %d", ctx.NArgs()))
+	var (
+		videoURL string
+		err      error
+	)
+
+	if ctx.NArgs() > 0 {
+		videoURL = strings.TrimSpace(ctx.Arg(0))
+	} else {
+		videoURL, err = safariFrontmostURL()
+		if err != nil {
+			fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound [youtube-url] [yt-dlp-args...]")
+			return reportError(ctx, fmt.Errorf("determine Safari tab URL: %w", err))
+		}
 	}
 
-	videoURL := strings.TrimSpace(ctx.Arg(0))
 	if videoURL == "" {
-		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound <youtube-url> [yt-dlp-args...]")
+		fmt.Fprintln(ctx.Stderr(), "Usage: flow youtubeToSound [youtube-url] [yt-dlp-args...]")
 		return reportError(ctx, fmt.Errorf("youtube url cannot be empty"))
 	}
 
@@ -622,6 +632,34 @@ func containsCookiesArgument(args []string) bool {
 		}
 	}
 	return false
+}
+
+func safariFrontmostURL() (string, error) {
+	script := `tell application "System Events"
+	set safariRunning to (name of processes) contains "Safari"
+end tell
+if not safariRunning then error "Safari is not running"
+tell application "Safari"
+	if not (exists front document) then error "Safari has no front document"
+	return URL of front document
+end tell`
+
+	cmd := exec.Command("osascript", "-e", script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			return "", fmt.Errorf("osascript: %s", trimmed)
+		}
+		return "", fmt.Errorf("osascript failed: %w", err)
+	}
+
+	url := strings.TrimSpace(string(output))
+	if url == "" {
+		return "", fmt.Errorf("front Safari tab URL is empty")
+	}
+
+	return url, nil
 }
 
 type commitPayload struct {

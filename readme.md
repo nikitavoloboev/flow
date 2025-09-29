@@ -36,7 +36,7 @@ Available Commands:
   cloneAndOpen     Clone a GitHub repository and open it in Cursor (falls back to Safari tab)
   gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
   updateGoVersion  Upgrade Go using the workspace script
-  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp
+  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp (falls back to Safari tab)
   version          Reports the current version of flow
 
 Flags:
@@ -48,6 +48,8 @@ Use "flow [command] --help" for more information about a command.
 For `f commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.
 
 For `f youtubeToSound`, the CLI now automatically passes `--cookies-from-browser` using Safari cookies. Override this by setting `FLOW_YOUTUBE_COOKIES_BROWSER` (e.g. `firefox`), set it to `none` to skip cookies entirely, or pass your own `--cookies*` flags after the URL—they are forwarded directly to `yt-dlp`.
+
+If you run `f youtubeToSound` without arguments, the command grabs the frontmost Safari tab URL automatically.
 
 ## Contributing
 
