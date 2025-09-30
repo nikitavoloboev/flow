@@ -45,6 +45,8 @@ Flags:
 Use "flow [command] --help" for more information about a command.
 ```
 
+Running `f` without any arguments opens an embedded fzf palette so you can fuzzy-search commands and read their descriptions before executing them.
+
 For `f commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.
 
 For `f youtubeToSound`, the CLI now automatically passes `--cookies-from-browser` using Safari cookies. Override this by setting `FLOW_YOUTUBE_COOKIES_BROWSER` (e.g. `firefox`), set it to `none` to skip cookies entirely, or pass your own `--cookies*` flags after the URL—they are forwarded directly to `yt-dlp`.

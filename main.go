@@ -15,6 +15,8 @@ import (
 	"unicode"
 
 	"github.com/dzonerzy/go-snap/snap"
+	fzf "github.com/junegunn/fzf/src"
+	fzfutil "github.com/junegunn/fzf/src/util"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
@@ -31,77 +33,88 @@ const (
 
 var cachedOpenAIKey string
 
+type commandInfo struct {
+	name        string
+	description string
+}
+
+var commandCatalog []commandInfo
+
 func main() {
 	app := snap.New("flow", "flow is CLI to do things fast").
 		Version(flowVersion).
 		DisableHelp()
 
-	app.Command("updateGoVersion", "Upgrade Go using the workspace script").
-		Action(func(ctx *snap.Context) error {
-			if _, err := os.Stat(upgradeScriptPath); err != nil {
-				return fmt.Errorf("unable to access %s: %w", upgradeScriptPath, err)
+	registerCommand(app, "updateGoVersion", "Upgrade Go using the workspace script", func(ctx *snap.Context) error {
+		if _, err := os.Stat(upgradeScriptPath); err != nil {
+			return fmt.Errorf("unable to access %s: %w", upgradeScriptPath, err)
+		}
+
+		cmd := exec.Command(upgradeScriptPath)
+		cmd.Stdout = ctx.Stdout()
+		cmd.Stderr = ctx.Stderr()
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("running %s: %w", upgradeScriptPath, err)
+		}
+
+		return nil
+	})
+
+	registerCommand(app, "deploy", "Deploy the current project using task publish", func(ctx *snap.Context) error {
+		return runDeploy(ctx)
+	})
+
+	registerCommand(app, "commit", "Generate a commit message with GPT-5 nano and create the commit", func(ctx *snap.Context) error {
+		return runCommit(ctx)
+	})
+
+	registerCommand(app, "commitPush", "Commit using GPT-5 nano and push the result to the tracked remote", func(ctx *snap.Context) error {
+		return runCommitPush(ctx)
+	})
+
+	registerCommand(app, "commitReviewAndPush", "Generate a commit message, review it interactively, commit, and push", func(ctx *snap.Context) error {
+		return runCommitReviewAndPush(ctx)
+	})
+
+	registerCommand(app, "branchFromClipboard", "Create a git branch from the clipboard name", func(ctx *snap.Context) error {
+		return runBranchFromClipboard(ctx)
+	})
+
+	registerCommand(app, "clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>", func(ctx *snap.Context) error {
+		return runClone(ctx)
+	})
+
+	registerCommand(app, "cloneAndOpen", "Clone a GitHub repository and open it in Cursor", func(ctx *snap.Context) error {
+		return runCloneAndOpen(ctx)
+	})
+
+	registerCommand(app, "gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed", func(ctx *snap.Context) error {
+		return runGitCheckout(ctx)
+	})
+
+	registerCommand(app, "youtubeToSound", "Download audio into ~/.flow/youtube-sound using yt-dlp", func(ctx *snap.Context) error {
+		return runYoutubeToSound(ctx)
+	})
+
+	registerCommand(app, "version", "Reports the current version of flow", func(ctx *snap.Context) error {
+		fmt.Fprintln(ctx.Stdout(), flowVersion)
+		return nil
+	})
+
+	if len(os.Args) == 1 {
+		if newArgs, exitCode, err := selectCommandArgs(); err != nil {
+			fmt.Fprintf(os.Stderr, "flow: %v\n", err)
+		} else if exitCode == -1 {
+			// Fall through to help output
+		} else if len(newArgs) == 0 {
+			if exitCode != 0 {
+				os.Exit(exitCode)
 			}
-
-			cmd := exec.Command(upgradeScriptPath)
-			cmd.Stdout = ctx.Stdout()
-			cmd.Stderr = ctx.Stderr()
-			if err := cmd.Run(); err != nil {
-				return fmt.Errorf("running %s: %w", upgradeScriptPath, err)
-			}
-
-			return nil
-		})
-
-	app.Command("deploy", "Deploy the current project using task publish").
-		Action(func(ctx *snap.Context) error {
-			return runDeploy(ctx)
-		})
-
-	app.Command("commit", "Generate a commit message with GPT-5 nano and create the commit").
-		Action(func(ctx *snap.Context) error {
-			return runCommit(ctx)
-		})
-
-	app.Command("commitPush", "Commit using GPT-5 nano and push the result to the tracked remote").
-		Action(func(ctx *snap.Context) error {
-			return runCommitPush(ctx)
-		})
-
-	app.Command("commitReviewAndPush", "Generate a commit message, review it interactively, commit, and push").
-		Action(func(ctx *snap.Context) error {
-			return runCommitReviewAndPush(ctx)
-		})
-
-	app.Command("branchFromClipboard", "Create a git branch from the clipboard name").
-		Action(func(ctx *snap.Context) error {
-			return runBranchFromClipboard(ctx)
-		})
-
-	app.Command("clone", "Clone a GitHub repository into ~/gh/<owner>/<repo>").
-		Action(func(ctx *snap.Context) error {
-			return runClone(ctx)
-		})
-
-	app.Command("cloneAndOpen", "Clone a GitHub repository and open it in Cursor").
-		Action(func(ctx *snap.Context) error {
-			return runCloneAndOpen(ctx)
-		})
-
-	app.Command("gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed").
-		Action(func(ctx *snap.Context) error {
-			return runGitCheckout(ctx)
-		})
-
-	app.Command("youtubeToSound", "Download audio into ~/.flow/youtube-sound using yt-dlp").
-		Action(func(ctx *snap.Context) error {
-			return runYoutubeToSound(ctx)
-		})
-
-	app.Command("version", "Reports the current version of flow").
-		Action(func(ctx *snap.Context) error {
-			fmt.Fprintln(ctx.Stdout(), flowVersion)
-			return nil
-		})
+			return
+		} else {
+			os.Args = append([]string{os.Args[0]}, newArgs...)
+		}
+	}
 
 	args := os.Args[1:]
 	if handled := handleTopLevel(args, os.Stdout); handled {
@@ -109,6 +122,75 @@ func main() {
 	}
 
 	app.RunAndExit()
+}
+
+func registerCommand(app *snap.App, name, description string, action snap.ActionFunc) {
+	commandCatalog = append(commandCatalog, commandInfo{name: name, description: description})
+	app.Command(name, description).
+		Action(action)
+}
+
+func selectCommandArgs() ([]string, int, error) {
+	if len(commandCatalog) == 0 {
+		return nil, -1, nil
+	}
+
+	if !fzfutil.IsTty(os.Stdin) || !fzfutil.IsTty(os.Stdout) {
+		return nil, -1, nil
+	}
+
+	options, err := fzf.ParseOptions(true, []string{
+		"--height=40%",
+		"--layout=reverse-list",
+		"--border=rounded",
+		"--prompt", "flow> ",
+		"--info=inline",
+		"--no-multi",
+		"--header", "Select a flow command (Enter to run, ESC to cancel)",
+	})
+	if err != nil {
+		return nil, fzf.ExitError, fmt.Errorf("initialize command palette: %w", err)
+	}
+
+	input := make(chan string, len(commandCatalog))
+	options.Input = input
+
+	var selections []string
+	options.Printer = func(str string) {
+		if str != "" {
+			selections = append(selections, str)
+		}
+	}
+
+	go func() {
+		for _, entry := range commandCatalog {
+			line := fmt.Sprintf("%s\t%s", entry.name, entry.description)
+			input <- line
+		}
+		close(input)
+	}()
+
+	code, runErr := fzf.Run(options)
+	if runErr != nil {
+		return nil, code, fmt.Errorf("run command palette: %w", runErr)
+	}
+	if code != fzf.ExitOk {
+		return nil, code, nil
+	}
+	if len(selections) == 0 {
+		return nil, fzf.ExitError, fmt.Errorf("no selection returned")
+	}
+
+	first := selections[0]
+	if tab := strings.IndexRune(first, '\t'); tab >= 0 {
+		first = first[:tab]
+	}
+	selected := strings.TrimSpace(first)
+	if selected == "" {
+		return nil, fzf.ExitError, fmt.Errorf("empty selection returned")
+	}
+
+	return []string{selected}, fzf.ExitOk, nil
 }
 
 func handleTopLevel(args []string, out io.Writer) bool {
@@ -233,6 +315,8 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  flow [command]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Run `flow` without arguments to open the interactive command palette.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Available Commands:")
 	fmt.Fprintln(out, "  help             Help about any command")
