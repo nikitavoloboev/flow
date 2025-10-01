@@ -12,6 +12,8 @@ There will be a CLI that wraps across everything (in some language). For web, it
 
 For now the code here is some Go code I wrote (but up to date code for this is in [go](https://github.com/nikitavoloboev/go) now).
 
+There will also be [Alfred](https://www.alfredapp.com)/[Raycast](https://www.raycast.com) interfaces to this all too soon.
+
 ### 🖤
 
 [![Discord](https://go.nikiv.dev/badge-discord)](https://go.nikiv.dev/discord) [![X](https://go.nikiv.dev/badge-x)](https://x.com/nikitavoloboev) [![nikiv.dev](https://go.nikiv.dev/badge-nikiv)](https://nikiv.dev)
