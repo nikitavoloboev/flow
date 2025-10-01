@@ -1,6 +1,6 @@
 # flow
 
-> CLI to do things fast
+> CLI + web server to do things fast
 
 I have a `flow` CLI in all languages to expose different commands through CLI interface.
 
