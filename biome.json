@@ -1,0 +1,116 @@
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "formatter": {
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".next",
+      "logs",
+      "postgres",
+      ".turbo",
+      "playwright-report",
+      "test-results",
+      "src-tauri"
+    ],
+    "enabled": true,
+    "formatWithErrors": false,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineEnding": "lf",
+    "lineWidth": 80,
+    "attributePosition": "auto"
+  },
+  "organizeImports": {
+    "enabled": true,
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".next",
+      "logs",
+      "postgres",
+      ".turbo",
+      "playwright-report",
+      "test-results",
+      "src-tauri"
+    ]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noChildrenProp": "off",
+        "useExhaustiveDependencies": "off",
+        "noUnsafeOptionalChaining": "off",
+        "noSwitchDeclarations": "off",
+        "useJsxKeyInIterable": "off",
+        "noUnusedImports": "warn",
+        "noInvalidDirectionInLinearGradient": "off"
+      },
+      "performance": {
+        "noAccumulatingSpread": "off"
+      },
+      "style": {
+        "useFilenamingConvention": {
+          "level": "error",
+          "options": {
+            "strictCase": true,
+            "filenameCases": ["kebab-case", "export"],
+            "requireAscii": true
+          }
+        },
+        "noNonNullAssertion": "off",
+        "noParameterAssign": "off",
+        "useTemplate": "off",
+        "useImportType": "off",
+        "noUselessElse": "off",
+        "useShorthandFunctionType": "off",
+        "useEnumInitializers": "off",
+        "useDefaultParameterLast": "off"
+      },
+      "complexity": {
+        "noStaticOnlyClass": "off",
+        "noBannedTypes": "off",
+        "noForEach": "off",
+        "useLiteralKeys": "off"
+      },
+      "a11y": {
+        "useButtonType": "off",
+        "useKeyWithClickEvents": "off",
+        "noSvgWithoutTitle": "off"
+      },
+      "suspicious": {
+        "noExplicitAny": "off",
+        "noArrayIndexKey": "off",
+        "noPrototypeBuiltins": "off"
+      }
+    },
+    "ignore": [
+      "node_modules",
+      "dist",
+      ".next",
+      "logs",
+      "postgres",
+      ".turbo",
+      "playwright-report",
+      "test-results",
+      "src-tauri"
+    ]
+  },
+  "javascript": {
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": true
+    },
+    "formatter": {
+      "jsxQuoteStyle": "double",
+      "quoteProperties": "asNeeded",
+      "trailingCommas": "all",
+      "semicolons": "always",
+      "arrowParentheses": "always",
+      "bracketSpacing": true,
+      "bracketSameLine": false,
+      "quoteStyle": "single",
+      "attributePosition": "auto"
+    }
+  }
+}

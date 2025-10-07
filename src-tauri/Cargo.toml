@@ -1,0 +1,50 @@
+[package]
+name = "flow"
+version = "0.0.0"
+description = "Do things fast"
+authors = ["nikitavoloboev"]
+license = "MIT"
+edition = "2021"
+homepage = "https://github.com/nikitavoloboev/flow"
+repository = "https://github.com/nikitavoloboev/flow"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "docker_db_manager_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.4.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.8.5", features = [] }
+tauri-plugin-opener = "2.5.0"
+tauri-plugin-shell = "2.3.1"
+tauri-plugin-store = "2.4.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.145"
+uuid = { version = "1.18.1", features = ["v4"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+tauri-plugin-clipboard-manager = "2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.0"
+
+[profile.dev]
+incremental = true # Compile your binary in smaller steps.
+
+[profile.release]
+codegen-units = 1 # Allows LLVM to perform better optimization.
+lto = true        # Enables link-time-optimizations.
+opt-level = "s"   # Prioritizes small binary size. Use `3` if you prefer speed.
+panic = "abort"   # Higher performance by disabling panic handlers.
+strip = true      # Ensures debug symbols are removed.
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"

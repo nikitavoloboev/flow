@@ -1,0 +1,50 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Docker DB Manager",
+  "version": "0.0.0",
+  "identifier": "com.abians.docker-db-manager",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "docker-db-manager",
+        "width": 800,
+        "height": 500,
+        "center": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+      "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI5M0Y1NkYyQjc0NEU4RkIKUldUNzZFUzM4bFkvS1ZWRG5GRkhhNUJESGZPZjFBUEZjV3U2aW9vdGU3UkRaZWhtcVpQMDA5T3YK",
+      "endpoints": [
+        "https://github.com/nikitavoloboev/flow/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
