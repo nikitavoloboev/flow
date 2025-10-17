@@ -10,7 +10,7 @@ Run `task` to see all possible commands.
 
 ## `flow` CLI
 
-[flow](https://github.com/nikitavoloboev/flow) repo explains purpose of flow well. See [cli/flow](cli/flow) for its code/docs.
+`flow` is a CLI as a dump of various commands written in Go that are useful to me. See [cli/flow](cli/flow) for its code/docs.
 
 Run `task install-flow` to install `fgo` (shortened `flow-go`) binary into `~/bin`.
 
@@ -20,4 +20,4 @@ Any PR to improve is welcome. [codex](https://github.com/openai/codex) & [cursor
 
 ### 🖤
 
-[![Discord](https://go.nikiv.dev/badge-discord)](https://go.nikiv.dev/discord) [![X](https://go.nikiv.dev/badge-x)](https://x.com/nikitavoloboev) [![nikiv.dev](https://go.nikiv.dev/badge-nikiv)](https://nikiv.dev)
+[![Discord](https://go.nikiv.dev/badge-discord)](https://go.nikiv.dev/discord) [![X](https://go.nikiv.dev/badge-x)](https://x.com/nikivdev) [![nikiv.dev](https://go.nikiv.dev/badge-nikiv)](https://nikiv.dev)
