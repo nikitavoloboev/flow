@@ -69,7 +69,7 @@ tasks:
         set -euo pipefail
         task flow -- {{.CLI_ARGS}}
 
-  install-flow:
+  deploy:
     desc: Build the fgo CLI binary, install it to ~/bin as fgo, and optionally add ~/bin to PATH for your shell.
     silent: true
     cmds:
@@ -92,11 +92,13 @@ tasks:
         install_path="$install_dir/{{.bin_name}}"
         mv "$tmp_dir/{{.bin_name}}" "$install_path"
         chmod 755 "$install_path"
+        ln -sf "$install_path" "$install_dir/fe"
         rm -rf "$tmp_dir"
         echo "Installed CLI to $install_path"
+        echo "Created symlink $install_dir/fe -> $install_path"
 
         help_snapshot="$("$install_path" --help 2>&1 || true)"
-        notes=$'Running `fgo` without any arguments opens an embedded fzf palette so you can fuzzy-search commands and read their descriptions before executing them.\n\nFor `fgo commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.\n\nFor `fgo youtubeToSound`, the CLI automatically passes `--cookies-from-browser` using Safari cookies. Override this by setting `FLOW_YOUTUBE_COOKIES_BROWSER` (e.g. `firefox`), set it to `none` to skip cookies entirely, or pass your own `--cookies*` flags after the URL—they are forwarded directly to `yt-dlp`.\n\nIf you run `fgo youtubeToSound` without arguments, the command grabs the frontmost Safari tab URL automatically.'
+        notes=$'Running `fgo` without any arguments opens an embedded fzf palette so you can fuzzy-search commands and read their descriptions before executing them.\n\nFor `fgo commit`, export `OPENAI_API_KEY` in your shell profile (e.g. fish config) so the CLI can talk to OpenAI. This environment variable is the only requirement, so the command works in local shells and CI alike.\n\nFor `fgo youtubeToSound`, the CLI automatically passes `--cookies-from-browser` using Safari cookies. Override this by setting `FLOW_YOUTUBE_COOKIES_BROWSER` (e.g. `firefox`), set it to `none` to skip cookies entirely, or pass your own `--cookies*` flags after the URL—they are forwarded directly to `yt-dlp`.\n\nIf you run `fgo youtubeToSound` without arguments, the command grabs the frontmost Safari tab URL automatically.\n\nA shorthand `fe` alias is installed alongside `fgo`; update or remove the symlink at ~/bin/fe if you prefer a different name.'
 
         {
           echo "# fgo"

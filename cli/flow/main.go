@@ -63,8 +63,8 @@ func main() {
 		return nil
 	})
 
-	registerCommand(app, "install-flow", "Install fgo into ~/bin and optionally add it to your PATH", func(ctx *snap.Context) error {
-		return runInstallFlow(ctx)
+	registerCommand(app, "deploy", "Install fgo into ~/bin and optionally add it to your PATH", func(ctx *snap.Context) error {
+		return runDeploy(ctx)
 	})
 
 	registerCommand(app, "commit", "Generate a commit message with GPT-5 nano and create the commit", func(ctx *snap.Context) error {
@@ -93,6 +93,18 @@ func main() {
 
 	registerCommand(app, "gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed", func(ctx *snap.Context) error {
 		return runGitCheckout(ctx)
+	})
+
+	registerCommand(app, "gitSetupFork", "Point origin at your private fork while keeping upstream for the original repo", func(ctx *snap.Context) error {
+		return runGitSetupFork(ctx)
+	})
+
+	registerCommand(app, "gitFetchUpstream", "Fetch from upstream (or all remotes) with pruning", func(ctx *snap.Context) error {
+		return runGitFetchUpstream(ctx)
+	})
+
+	registerCommand(app, "gitSyncFork", "Update a local branch from upstream using rebase or merge", func(ctx *snap.Context) error {
+		return runGitSyncFork(ctx)
 	})
 
 	registerCommand(app, "youtubeToSound", "Download audio into ~/.flow/youtube-sound using yt-dlp", func(ctx *snap.Context) error {
@@ -243,11 +255,11 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintf(out, "  %s updateGoVersion\n", commandName)
 		return true
-	case "install-flow":
-		fmt.Fprintf(out, "Install %s into %s and prompt to add it to PATH using task install-flow\n", commandName, flowInstallDir)
+	case "deploy":
+		fmt.Fprintf(out, "Install %s into %s and prompt to add it to PATH using task deploy\n", commandName, flowInstallDir)
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintf(out, "  %s install-flow\n", commandName)
+		fmt.Fprintf(out, "  %s deploy\n", commandName)
 		return true
 	case "commit":
 		fmt.Fprintln(out, "Generate a commit message with GPT-5 nano and create the commit")
@@ -293,6 +305,28 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintf(out, "  %s gitCheckout <branch>\n", commandName)
 		return true
+	case "gitSetupFork":
+		fmt.Fprintln(out, "Point origin at your private fork while keeping upstream for the original repository")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+		return true
+	case "gitFetchUpstream":
+		fmt.Fprintln(out, "Fetch upstream (or all remotes) and prune deleted refs")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s gitFetchUpstream [--all] [--no-prune] [remote]\n", commandName)
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Defaults to fetching from the upstream remote with pruning.")
+		return true
+	case "gitSyncFork":
+		fmt.Fprintln(out, "Rebase or merge your local branch with upstream/<branch>")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Defaults: branch=current (or origin/HEAD), strategy=rebase, remote=upstream.")
+		return true
 	case "youtubeToSound":
 		fmt.Fprintln(out, "Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
 		fmt.Fprintln(out)
@@ -323,7 +357,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Available Commands:")
 	fmt.Fprintln(out, "  help             Help about any command")
-	fmt.Fprintf(out, "  install-flow     Install %s into %s and optionally add it to PATH\n", commandName, flowInstallDir)
+	fmt.Fprintf(out, "  deploy           Install %s into %s and optionally add it to PATH\n", commandName, flowInstallDir)
 	fmt.Fprintln(out, "  commit           Generate a commit message with GPT-5 nano and create the commit")
 	fmt.Fprintln(out, "  commitPush       Generate a commit message, commit, and push to the default remote")
 	fmt.Fprintln(out, "  commitReviewAndPush Generate a commit message, review it interactively, commit, and push")
@@ -331,6 +365,9 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor (Safari tab optional)")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
+	fmt.Fprintln(out, "  gitSetupFork     Point origin at your private fork while keeping upstream for the original repo")
+	fmt.Fprintln(out, "  gitFetchUpstream Fetch from upstream (or all remotes) with pruning")
+	fmt.Fprintln(out, "  gitSyncFork      Update a local branch from upstream using rebase or merge")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
 	fmt.Fprintln(out, "  version          Reports the current version of fgo")
@@ -598,9 +635,9 @@ end tell`
 	return url, nil
 }
 
-func runInstallFlow(ctx *snap.Context) error {
+func runDeploy(ctx *snap.Context) error {
 	if ctx.NArgs() != 0 {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s install-flow\n", commandName)
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s deploy\n", commandName)
 		return fmt.Errorf("expected 0 arguments, got %d", ctx.NArgs())
 	}
 
@@ -616,20 +653,20 @@ func runInstallFlow(ctx *snap.Context) error {
 		return fmt.Errorf("reading %s: %w", taskfilePath, err)
 	}
 
-	if !strings.Contains(string(contents), "install-flow") {
-		return fmt.Errorf("%s does not define an install-flow task", taskfilePath)
+	if !strings.Contains(string(contents), "deploy") {
+		return fmt.Errorf("%s does not define a deploy task", taskfilePath)
 	}
 
 	if _, err := exec.LookPath("task"); err != nil {
 		return fmt.Errorf("task command not found in PATH: %w", err)
 	}
 
-	cmd := exec.Command("task", "install-flow")
+	cmd := exec.Command("task", "deploy")
 	cmd.Stdin = ctx.Stdin()
 	cmd.Stdout = ctx.Stdout()
 	cmd.Stderr = ctx.Stderr()
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("task install-flow failed: %w", err)
+		return fmt.Errorf("task deploy failed: %w", err)
 	}
 	return nil
 }
@@ -1226,6 +1263,309 @@ func splitOwnerRepo(path string) (string, string, error) {
 	return owner, repo, nil
 }
 
+func runGitSetupFork(ctx *snap.Context) error {
+	if ctx.NArgs() < 1 || ctx.NArgs() > 2 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+		return fmt.Errorf("expected 1 or 2 arguments, got %d", ctx.NArgs())
+	}
+
+	privateURL := strings.TrimSpace(ctx.Arg(0))
+	if privateURL == "" {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+		return fmt.Errorf("private repository URL cannot be empty")
+	}
+
+	explicitUpstream := ""
+	if ctx.NArgs() == 2 {
+		explicitUpstream = strings.TrimSpace(ctx.Arg(1))
+		if explicitUpstream == "" {
+			fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+			return fmt.Errorf("original repository URL cannot be empty")
+		}
+	}
+
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	originExists, originURL, err := gitRemoteState("origin")
+	if err != nil {
+		return err
+	}
+
+	upstreamExists, upstreamURL, err := gitRemoteState("upstream")
+	if err != nil {
+		return err
+	}
+
+	targetUpstreamURL := explicitUpstream
+	if targetUpstreamURL == "" {
+		if upstreamExists {
+			targetUpstreamURL = upstreamURL
+		} else if originExists && !urlsEquivalent(originURL, privateURL) {
+			targetUpstreamURL = originURL
+		}
+	}
+
+	if targetUpstreamURL == "" {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+		return fmt.Errorf("unable to determine original repository URL automatically; provide it explicitly")
+	}
+
+	var (
+		changes          []string
+		finalOriginURL   string
+		finalUpstreamURL string
+	)
+
+	if !upstreamExists {
+		if originExists && !urlsEquivalent(originURL, privateURL) && (explicitUpstream == "" || urlsEquivalent(originURL, targetUpstreamURL)) {
+			if err := runGitCommandStreaming(ctx, "remote", "rename", "origin", "upstream"); err != nil {
+				return fmt.Errorf("git remote rename origin upstream: %w", err)
+			}
+			changes = append(changes, fmt.Sprintf("Renamed origin to upstream (%s)", originURL))
+			upstreamExists = true
+			upstreamURL = originURL
+			originExists = false
+		}
+
+		if !upstreamExists {
+			if err := runGitCommandStreaming(ctx, "remote", "add", "upstream", targetUpstreamURL); err != nil {
+				return fmt.Errorf("git remote add upstream %s: %w", targetUpstreamURL, err)
+			}
+			changes = append(changes, fmt.Sprintf("Added upstream remote pointing to %s", targetUpstreamURL))
+			upstreamExists = true
+			upstreamURL = targetUpstreamURL
+		}
+	}
+
+	if upstreamExists && !urlsEquivalent(upstreamURL, targetUpstreamURL) {
+		if err := runGitCommandStreaming(ctx, "remote", "set-url", "upstream", targetUpstreamURL); err != nil {
+			return fmt.Errorf("git remote set-url upstream %s: %w", targetUpstreamURL, err)
+		}
+		changes = append(changes, fmt.Sprintf("Updated upstream URL to %s", targetUpstreamURL))
+		upstreamURL = targetUpstreamURL
+	}
+	finalUpstreamURL = upstreamURL
+
+	if originExists {
+		if !urlsEquivalent(originURL, privateURL) {
+			if err := runGitCommandStreaming(ctx, "remote", "set-url", "origin", privateURL); err != nil {
+				return fmt.Errorf("git remote set-url origin %s: %w", privateURL, err)
+			}
+			changes = append(changes, fmt.Sprintf("Updated origin URL to %s", privateURL))
+		}
+	} else {
+		if err := runGitCommandStreaming(ctx, "remote", "add", "origin", privateURL); err != nil {
+			return fmt.Errorf("git remote add origin %s: %w", privateURL, err)
+		}
+		changes = append(changes, fmt.Sprintf("Added origin remote pointing to %s", privateURL))
+	}
+	finalOriginURL = privateURL
+
+	if len(changes) == 0 {
+		fmt.Fprintln(ctx.Stdout(), "Remotes already configured; no changes made.")
+	} else {
+		for _, change := range changes {
+			fmt.Fprintf(ctx.Stdout(), "✔️ %s\n", change)
+		}
+	}
+	fmt.Fprintf(ctx.Stdout(), "origin -> %s\n", finalOriginURL)
+	fmt.Fprintf(ctx.Stdout(), "upstream -> %s\n", finalUpstreamURL)
+	fmt.Fprintln(ctx.Stdout(), "You can now run `git fetch upstream` to pull changes from the original repository.")
+	return nil
+}
+
+func runGitFetchUpstream(ctx *snap.Context) error {
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	remote := "upstream"
+	remoteSpecified := false
+	fetchAll := false
+	prune := true
+
+	for i := 0; i < ctx.NArgs(); i++ {
+		arg := strings.TrimSpace(ctx.Arg(i))
+		if arg == "" {
+			continue
+		}
+
+		switch {
+		case arg == "--all":
+			fetchAll = true
+		case arg == "--no-prune":
+			prune = false
+		case strings.HasPrefix(arg, "--"):
+			fmt.Fprintf(ctx.Stderr(), "Usage: %s gitFetchUpstream [--all] [--no-prune] [remote]\n", commandName)
+			return fmt.Errorf("unknown flag %q", arg)
+		default:
+			remoteSpecified = true
+			remote = arg
+		}
+	}
+
+	if fetchAll && remoteSpecified {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitFetchUpstream [--all] [--no-prune] [remote]\n", commandName)
+		return fmt.Errorf("cannot specify a remote when using --all")
+	}
+
+	args := []string{"fetch"}
+	var summary string
+	if fetchAll {
+		args = append(args, "--all")
+		summary = "all remotes"
+	} else {
+		exists, _, err := gitRemoteState(remote)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("git remote %q not found", remote)
+		}
+		args = append(args, remote)
+		summary = remote
+	}
+	if prune {
+		args = append(args, "--prune")
+	}
+
+	if err := runGitCommandStreaming(ctx, args...); err != nil {
+		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Fetched %s\n", summary)
+	return nil
+}
+
+func runGitSyncFork(ctx *snap.Context) error {
+	if err := ensureGitRepository(); err != nil {
+		return err
+	}
+
+	branch := ""
+	strategy := "rebase"
+	remote := "upstream"
+
+	for i := 0; i < ctx.NArgs(); i++ {
+		arg := strings.TrimSpace(ctx.Arg(i))
+		if arg == "" {
+			continue
+		}
+
+		switch {
+		case arg == "--branch":
+			i++
+			if i >= ctx.NArgs() {
+				fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+				return fmt.Errorf("--branch requires a value")
+			}
+			branch = strings.TrimSpace(ctx.Arg(i))
+		case strings.HasPrefix(arg, "--branch="):
+			branch = strings.TrimSpace(strings.TrimPrefix(arg, "--branch="))
+		case arg == "--strategy":
+			i++
+			if i >= ctx.NArgs() {
+				fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+				return fmt.Errorf("--strategy requires a value")
+			}
+			strategy = strings.TrimSpace(ctx.Arg(i))
+		case strings.HasPrefix(arg, "--strategy="):
+			strategy = strings.TrimSpace(strings.TrimPrefix(arg, "--strategy="))
+		case arg == "--remote":
+			i++
+			if i >= ctx.NArgs() {
+				fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+				return fmt.Errorf("--remote requires a value")
+			}
+			remote = strings.TrimSpace(ctx.Arg(i))
+		case strings.HasPrefix(arg, "--remote="):
+			remote = strings.TrimSpace(strings.TrimPrefix(arg, "--remote="))
+		default:
+			fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+			return fmt.Errorf("unexpected argument %q", arg)
+		}
+	}
+
+	if remote == "" {
+		return fmt.Errorf("remote cannot be empty")
+	}
+
+	exists, _, err := gitRemoteState(remote)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("git remote %q not found", remote)
+	}
+
+	if branch == "" {
+		branch = detectDefaultBranch()
+	}
+	if strings.TrimSpace(branch) == "" || branch == "HEAD" {
+		return fmt.Errorf("could not determine branch to sync; provide one with --branch")
+	}
+
+	if err := runGitCommandStreaming(ctx, "fetch", remote, "--prune"); err != nil {
+		return fmt.Errorf("git fetch %s --prune: %w", remote, err)
+	}
+
+	remoteRef := fmt.Sprintf("%s/%s", remote, branch)
+	hasRemoteBranch, err := gitRefExists(remoteRef)
+	if err != nil {
+		return fmt.Errorf("check remote branch %s: %w", remoteRef, err)
+	}
+	if !hasRemoteBranch {
+		return fmt.Errorf("remote branch %s not found", remoteRef)
+	}
+
+	localExists, err := gitRefExists(branch)
+	if err != nil {
+		return fmt.Errorf("check local branch %s: %w", branch, err)
+	}
+
+	createdBranch := false
+	if !localExists {
+		if err := runGitCommandStreaming(ctx, "checkout", "-b", branch, remoteRef); err != nil {
+			return fmt.Errorf("git checkout -b %s %s: %w", branch, remoteRef, err)
+		}
+		createdBranch = true
+	} else {
+		current, err := currentGitBranch()
+		if err != nil {
+			return err
+		}
+		if current != branch {
+			if err := runGitCommandStreaming(ctx, "checkout", branch); err != nil {
+				return fmt.Errorf("git checkout %s: %w", branch, err)
+			}
+		}
+	}
+
+	switch strings.ToLower(strategy) {
+	case "rebase", "":
+		if err := runGitCommandStreaming(ctx, "rebase", remoteRef); err != nil {
+			return fmt.Errorf("git rebase %s: %w", remoteRef, err)
+		}
+	case "merge":
+		if err := runGitCommandStreaming(ctx, "merge", "--no-ff", remoteRef); err != nil {
+			return fmt.Errorf("git merge --no-ff %s: %w", remoteRef, err)
+		}
+	default:
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSyncFork [--branch <name>] [--strategy rebase|merge] [--remote <remote>]\n", commandName)
+		return fmt.Errorf("unsupported strategy %q", strategy)
+	}
+
+	action := "Synced"
+	if createdBranch {
+		action = "Created"
+	}
+	fmt.Fprintf(ctx.Stdout(), "✔️ %s %s with %s using %s\n", action, branch, remoteRef, strings.ToLower(strategy))
+	fmt.Fprintf(ctx.Stdout(), "Next: git push origin %s\n", branch)
+	return nil
+}
+
 func runGitCheckout(ctx *snap.Context) error {
 	if ctx.NArgs() != 1 {
 		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout <branch>\n", commandName)
@@ -1408,6 +1748,128 @@ func gitRemoteHasBranch(remote, branch string) (bool, error) {
 	}
 
 	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func gitRemoteState(name string) (bool, string, error) {
+	cmd := exec.Command("git", "remote", "get-url", name)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		lowered := strings.ToLower(trimmed)
+		if strings.Contains(lowered, "no such remote") {
+			return false, "", nil
+		}
+		if trimmed != "" {
+			return false, "", fmt.Errorf("git remote get-url %s: %s", name, trimmed)
+		}
+		return false, "", fmt.Errorf("git remote get-url %s: %w", name, err)
+	}
+
+	return true, strings.TrimSpace(string(out)), nil
+}
+
+func detectDefaultBranch() string {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err == nil {
+		current := strings.TrimSpace(string(out))
+		if current != "" && current != "HEAD" {
+			return current
+		}
+	}
+
+	out, err = exec.Command("git", "symbolic-ref", "refs/remotes/origin/HEAD").Output()
+	if err == nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			parts := strings.Split(trimmed, "/")
+			if len(parts) > 0 {
+				return parts[len(parts)-1]
+			}
+		}
+	}
+
+	return "main"
+}
+
+func currentGitBranch() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(out))
+		if trimmed != "" {
+			return "", fmt.Errorf("%s", trimmed)
+		}
+		return "", fmt.Errorf("git rev-parse --abbrev-ref HEAD: %w", err)
+	}
+
+	branch := strings.TrimSpace(string(out))
+	return branch, nil
+}
+
+func urlsEquivalent(a, b string) bool {
+	na := normalizeRemoteURL(a)
+	nb := normalizeRemoteURL(b)
+	if na != "" && nb != "" {
+		return strings.EqualFold(na, nb)
+	}
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func normalizeRemoteURL(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	if host, path, ok := extractRemoteHostPath(trimmed); ok {
+		if host != "" && path != "" {
+			return host + "/" + path
+		}
+		if host != "" {
+			return host
+		}
+		if path != "" {
+			return path
+		}
+	}
+
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	return strings.TrimSuffix(trimmed, "/")
+}
+
+func extractRemoteHostPath(raw string) (string, string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", "", false
+	}
+
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	trimmed = strings.TrimSuffix(trimmed, "/")
+
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err == nil {
+			host := strings.ToLower(u.Host)
+			if strings.HasPrefix(host, "git@") {
+				host = strings.TrimPrefix(host, "git@")
+			}
+			if colon := strings.IndexRune(host, ':'); colon >= 0 {
+				host = host[:colon]
+			}
+			path := strings.Trim(u.Path, "/")
+			return host, path, true
+		}
+	}
+
+	if strings.HasPrefix(trimmed, "git@") {
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) == 2 {
+			host := strings.ToLower(strings.TrimPrefix(parts[0], "git@"))
+			path := strings.Trim(parts[1], "/")
+			return host, path, true
+		}
+	}
+
+	return "", trimmed, false
 }
 
 func ensureGitRepository() error {
