@@ -95,8 +95,8 @@ func main() {
 		return runGitCheckout(ctx)
 	})
 
-	registerCommand(app, "gitSetupFork", "Point origin at your private fork while keeping upstream for the original repo", func(ctx *snap.Context) error {
-		return runGitSetupFork(ctx)
+	registerCommand(app, "privateForkRepo", "Create a private fork in ~/fork/<owner>/<repo> with upstream remotes", func(ctx *snap.Context) error {
+		return runPrivateForkRepo(ctx)
 	})
 
 	registerCommand(app, "gitFetchUpstream", "Fetch from upstream (or all remotes) with pruning", func(ctx *snap.Context) error {
@@ -109,6 +109,14 @@ func main() {
 
 	registerCommand(app, "youtubeToSound", "Download audio into ~/.flow/youtube-sound using yt-dlp", func(ctx *snap.Context) error {
 		return runYoutubeToSound(ctx)
+	})
+
+	registerCommand(app, "spotifyPlay", "Start playing a Spotify track from a URL or ID", func(ctx *snap.Context) error {
+		return runSpotifyPlay(ctx)
+	})
+
+	registerCommand(app, "openLookingBack", "Open the current looking-back doc in Cursor", func(ctx *snap.Context) error {
+		return runOpenLookingBack(ctx)
 	})
 
 	registerCommand(app, "version", "Reports the current version of fgo", func(ctx *snap.Context) error {
@@ -305,11 +313,11 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintf(out, "  %s gitCheckout <branch>\n", commandName)
 		return true
-	case "gitSetupFork":
-		fmt.Fprintln(out, "Point origin at your private fork while keeping upstream for the original repository")
+	case "privateForkRepo":
+		fmt.Fprintln(out, "Clone a public repo into ~/fork and create a private fork under your account")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintf(out, "  %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
+		fmt.Fprintf(out, "  %s privateForkRepo [github-repo-url]\n", commandName)
 		return true
 	case "gitFetchUpstream":
 		fmt.Fprintln(out, "Fetch upstream (or all remotes) and prune deleted refs")
@@ -335,6 +343,18 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "When no URL is provided, the command uses the frontmost Safari tab.")
 		fmt.Fprintln(out, "Any additional arguments are forwarded directly to yt-dlp.")
+		return true
+	case "spotifyPlay":
+		fmt.Fprintln(out, "Start playing a Spotify track or playlist by URL or ID")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s spotifyPlay <spotify-url-or-id>\n", commandName)
+		return true
+	case "openLookingBack":
+		fmt.Fprintln(out, "Open the current year-month looking-back doc in Cursor")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s openLookingBack\n", commandName)
 		return true
 	case "version":
 		fmt.Fprintln(out, "Reports the current version of fgo")
@@ -365,11 +385,13 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor (Safari tab optional)")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
-	fmt.Fprintln(out, "  gitSetupFork     Point origin at your private fork while keeping upstream for the original repo")
+	fmt.Fprintln(out, "  privateForkRepo  Clone a repo and create a private fork with upstream remotes")
 	fmt.Fprintln(out, "  gitFetchUpstream Fetch from upstream (or all remotes) with pruning")
 	fmt.Fprintln(out, "  gitSyncFork      Update a local branch from upstream using rebase or merge")
 	fmt.Fprintln(out, "  updateGoVersion  Upgrade Go using the workspace script")
 	fmt.Fprintln(out, "  youtubeToSound   Download audio from a YouTube URL into ~/.flow/youtube-sound using yt-dlp")
+	fmt.Fprintln(out, "  spotifyPlay      Start playing a Spotify track from a URL or ID")
+	fmt.Fprintln(out, "  openLookingBack  Open the current looking-back doc in Cursor")
 	fmt.Fprintln(out, "  version          Reports the current version of fgo")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Flags:")
@@ -609,6 +631,52 @@ func openInCursor(ctx *snap.Context, path string) error {
 	return nil
 }
 
+func runOpenLookingBack(ctx *snap.Context) error {
+	if ctx.NArgs() != 0 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s openLookingBack\n", commandName)
+		return fmt.Errorf("expected 0 arguments, got %d", ctx.NArgs())
+	}
+
+	now := time.Now()
+	yearSuffix := now.Format("06")
+	monthName := strings.ToLower(now.Format("January"))
+	fileName := fmt.Sprintf("%s-%s.mdx", yearSuffix, monthName)
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("determine home directory: %w", err))
+	}
+
+	baseDir := filepath.Join(homeDir, "src", "nikiv", "content", "docs", "looking-back")
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+		return reportError(ctx, fmt.Errorf("create directory %s: %w", baseDir, err))
+	}
+
+	targetFile := filepath.Join(baseDir, fileName)
+
+	created := false
+	if _, err := os.Stat(targetFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.WriteFile(targetFile, []byte{}, 0o644); err != nil {
+				return reportError(ctx, fmt.Errorf("create file %s: %w", targetFile, err))
+			}
+			created = true
+		} else {
+			return reportError(ctx, fmt.Errorf("stat %s: %w", targetFile, err))
+		}
+	}
+
+	if err := openInCursor(ctx, targetFile); err != nil {
+		return reportError(ctx, err)
+	}
+
+	if created {
+		fmt.Fprintf(ctx.Stdout(), "✔️ Created %s\n", targetFile)
+	}
+	fmt.Fprintf(ctx.Stdout(), "✔️ Opened %s in Cursor\n", targetFile)
+	return nil
+}
+
 func activeSafariURL() (string, error) {
 	if _, err := exec.LookPath("osascript"); err != nil {
 		return "", fmt.Errorf("osascript not found in PATH: %w", err)
@@ -750,6 +818,108 @@ func containsCookiesArgument(args []string) bool {
 		}
 	}
 	return false
+}
+
+func runSpotifyPlay(ctx *snap.Context) error {
+	if ctx.NArgs() != 1 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s spotifyPlay <spotify-url-or-id>\n", commandName)
+		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	}
+
+	input := strings.TrimSpace(ctx.Arg(0))
+	if input == "" {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s spotifyPlay <spotify-url-or-id>\n", commandName)
+		return fmt.Errorf("spotify identifier cannot be empty")
+	}
+
+	uri, err := normalizeSpotifyURI(input)
+	if err != nil {
+		return reportError(ctx, err)
+	}
+
+	if _, err := exec.LookPath("osascript"); err != nil {
+		return reportError(ctx, fmt.Errorf("osascript not found in PATH: %w", err))
+	}
+
+	script := fmt.Sprintf(`tell application "Spotify"
+	activate
+	play track "%s"
+end tell`, escapeAppleScriptString(uri))
+
+	cmd := exec.Command("osascript", "-e", script)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return reportError(ctx, fmt.Errorf("control Spotify via osascript: %w", err))
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Playing %s\n", uri)
+	return nil
+}
+
+func normalizeSpotifyURI(input string) (string, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", fmt.Errorf("spotify identifier cannot be empty")
+	}
+
+	if strings.HasPrefix(trimmed, "spotify:") {
+		return trimmed, nil
+	}
+
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("parse Spotify URL: %w", err)
+		}
+		host := strings.ToLower(u.Host)
+		if !strings.HasSuffix(host, "spotify.com") && host != "spotify.link" {
+			return "", fmt.Errorf("expected a spotify.com URL, got %s", u.Host)
+		}
+
+		path := strings.Trim(u.Path, "/")
+		parts := strings.Split(path, "/")
+		if len(parts) < 2 {
+			return "", fmt.Errorf("unable to determine Spotify resource from URL")
+		}
+
+		resourceID := parts[len(parts)-1]
+		if resourceID == "" {
+			return "", fmt.Errorf("spotify URL missing resource identifier")
+		}
+		if idx := strings.Index(resourceID, "?"); idx >= 0 {
+			resourceID = resourceID[:idx]
+		}
+
+		resourceType := ""
+		for i := len(parts) - 2; i >= 0; i-- {
+			candidate := strings.ToLower(parts[i])
+			if candidate == "" || candidate == "user" || candidate == "embed" || strings.HasPrefix(candidate, "intl-") {
+				continue
+			}
+			resourceType = candidate
+			break
+		}
+
+		if resourceType == "" {
+			resourceType = "track"
+		}
+
+		return fmt.Sprintf("spotify:%s:%s", resourceType, resourceID), nil
+	}
+
+	if strings.Contains(trimmed, "/") {
+		return "", fmt.Errorf("unrecognized Spotify identifier %q", trimmed)
+	}
+
+	return fmt.Sprintf("spotify:track:%s", trimmed), nil
+}
+
+func escapeAppleScriptString(value string) string {
+	value = strings.ReplaceAll(value, "\\", "\\\\")
+	value = strings.ReplaceAll(value, "\"", "\\\"")
+	return value
 }
 
 func safariFrontmostURL() (string, error) {
@@ -1263,116 +1433,179 @@ func splitOwnerRepo(path string) (string, string, error) {
 	return owner, repo, nil
 }
 
-func runGitSetupFork(ctx *snap.Context) error {
-	if ctx.NArgs() < 1 || ctx.NArgs() > 2 {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
-		return fmt.Errorf("expected 1 or 2 arguments, got %d", ctx.NArgs())
+func runPrivateForkRepo(ctx *snap.Context) error {
+	if ctx.NArgs() > 1 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s privateForkRepo [github-repo-url]\n", commandName)
+		return fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs())
 	}
 
-	privateURL := strings.TrimSpace(ctx.Arg(0))
-	if privateURL == "" {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
-		return fmt.Errorf("private repository URL cannot be empty")
-	}
-
-	explicitUpstream := ""
-	if ctx.NArgs() == 2 {
-		explicitUpstream = strings.TrimSpace(ctx.Arg(1))
-		if explicitUpstream == "" {
-			fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
-			return fmt.Errorf("original repository URL cannot be empty")
-		}
-	}
-
-	if err := ensureGitRepository(); err != nil {
-		return err
-	}
-
-	originExists, originURL, err := gitRemoteState("origin")
-	if err != nil {
-		return err
-	}
-
-	upstreamExists, upstreamURL, err := gitRemoteState("upstream")
-	if err != nil {
-		return err
-	}
-
-	targetUpstreamURL := explicitUpstream
-	if targetUpstreamURL == "" {
-		if upstreamExists {
-			targetUpstreamURL = upstreamURL
-		} else if originExists && !urlsEquivalent(originURL, privateURL) {
-			targetUpstreamURL = originURL
-		}
-	}
-
-	if targetUpstreamURL == "" {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitSetupFork <private-repo-url> [original-repo-url]\n", commandName)
-		return fmt.Errorf("unable to determine original repository URL automatically; provide it explicitly")
-	}
-
-	var (
-		changes          []string
-		finalOriginURL   string
-		finalUpstreamURL string
-	)
-
-	if !upstreamExists {
-		if originExists && !urlsEquivalent(originURL, privateURL) && (explicitUpstream == "" || urlsEquivalent(originURL, targetUpstreamURL)) {
-			if err := runGitCommandStreaming(ctx, "remote", "rename", "origin", "upstream"); err != nil {
-				return fmt.Errorf("git remote rename origin upstream: %w", err)
-			}
-			changes = append(changes, fmt.Sprintf("Renamed origin to upstream (%s)", originURL))
-			upstreamExists = true
-			upstreamURL = originURL
-			originExists = false
-		}
-
-		if !upstreamExists {
-			if err := runGitCommandStreaming(ctx, "remote", "add", "upstream", targetUpstreamURL); err != nil {
-				return fmt.Errorf("git remote add upstream %s: %w", targetUpstreamURL, err)
-			}
-			changes = append(changes, fmt.Sprintf("Added upstream remote pointing to %s", targetUpstreamURL))
-			upstreamExists = true
-			upstreamURL = targetUpstreamURL
-		}
-	}
-
-	if upstreamExists && !urlsEquivalent(upstreamURL, targetUpstreamURL) {
-		if err := runGitCommandStreaming(ctx, "remote", "set-url", "upstream", targetUpstreamURL); err != nil {
-			return fmt.Errorf("git remote set-url upstream %s: %w", targetUpstreamURL, err)
-		}
-		changes = append(changes, fmt.Sprintf("Updated upstream URL to %s", targetUpstreamURL))
-		upstreamURL = targetUpstreamURL
-	}
-	finalUpstreamURL = upstreamURL
-
-	if originExists {
-		if !urlsEquivalent(originURL, privateURL) {
-			if err := runGitCommandStreaming(ctx, "remote", "set-url", "origin", privateURL); err != nil {
-				return fmt.Errorf("git remote set-url origin %s: %w", privateURL, err)
-			}
-			changes = append(changes, fmt.Sprintf("Updated origin URL to %s", privateURL))
-		}
+	var input string
+	if ctx.NArgs() == 1 {
+		input = strings.TrimSpace(ctx.Arg(0))
 	} else {
-		if err := runGitCommandStreaming(ctx, "remote", "add", "origin", privateURL); err != nil {
-			return fmt.Errorf("git remote add origin %s: %w", privateURL, err)
+		var err error
+		input, err = promptLine(ctx, "GitHub repository URL: ")
+		if err != nil {
+			return reportError(ctx, fmt.Errorf("read repository URL: %w", err))
 		}
-		changes = append(changes, fmt.Sprintf("Added origin remote pointing to %s", privateURL))
 	}
-	finalOriginURL = privateURL
 
-	if len(changes) == 0 {
-		fmt.Fprintln(ctx.Stdout(), "Remotes already configured; no changes made.")
+	if input == "" {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s privateForkRepo [github-repo-url]\n", commandName)
+		return fmt.Errorf("github repository url cannot be empty")
+	}
+
+	owner, repo, cloneURL, err := parseGitHubCloneInfo(input)
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("parse GitHub repository reference: %w", err))
+	}
+
+	login, err := currentGitHubLogin()
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("determine GitHub login: %w", err))
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("determine home directory: %w", err))
+	}
+
+	targetDir := filepath.Join(homeDir, "fork", owner, repo)
+	parentDir := filepath.Dir(targetDir)
+	if err := os.MkdirAll(parentDir, 0o755); err != nil {
+		return reportError(ctx, fmt.Errorf("create directory %s: %w", parentDir, err))
+	}
+
+	if info, err := os.Stat(targetDir); err == nil {
+		if info.IsDir() {
+			return reportError(ctx, fmt.Errorf("destination %s already exists", targetDir))
+		}
+		return reportError(ctx, fmt.Errorf("destination %s exists and is not a directory", targetDir))
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return reportError(ctx, fmt.Errorf("check %s: %w", targetDir, err))
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "ℹ️ Cloning %s into %s\n", cloneURL, targetDir)
+	if err := gitCloneTo(ctx, cloneURL, targetDir); err != nil {
+		return reportError(ctx, err)
+	}
+
+	if err := runGitCommandInDir(ctx, targetDir, "remote", "rename", "origin", "upstream"); err != nil {
+		return reportError(ctx, fmt.Errorf("git remote rename origin upstream: %w", err))
+	}
+
+	privateRepoName := repo
+	if !strings.HasSuffix(privateRepoName, "-i") {
+		privateRepoName += "-i"
+	}
+
+	exists, err := githubRepoExists(login, privateRepoName)
+	if err != nil {
+		return reportError(ctx, err)
+	}
+
+	if exists {
+		fmt.Fprintf(ctx.Stdout(), "ℹ️ Private repository %s/%s already exists; skipping creation.\n", login, privateRepoName)
 	} else {
-		for _, change := range changes {
-			fmt.Fprintf(ctx.Stdout(), "✔️ %s\n", change)
+		fmt.Fprintf(ctx.Stdout(), "ℹ️ Creating private repository %s/%s via gh\n", login, privateRepoName)
+		if err := createPrivateRepository(ctx, login, privateRepoName); err != nil {
+			return reportError(ctx, err)
 		}
 	}
-	fmt.Fprintf(ctx.Stdout(), "origin -> %s\n", finalOriginURL)
-	fmt.Fprintf(ctx.Stdout(), "upstream -> %s\n", finalUpstreamURL)
-	fmt.Fprintln(ctx.Stdout(), "You can now run `git fetch upstream` to pull changes from the original repository.")
+
+	privateSSH := fmt.Sprintf("git@github.com:%s/%s.git", login, privateRepoName)
+	if err := runGitCommandInDir(ctx, targetDir, "remote", "add", "origin", privateSSH); err != nil {
+		return reportError(ctx, fmt.Errorf("git remote add origin %s: %w", privateSSH, err))
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "✔️ Local copy: %s\n", targetDir)
+	fmt.Fprintf(ctx.Stdout(), "✔️ origin -> %s\n", privateSSH)
+	fmt.Fprintf(ctx.Stdout(), "✔️ upstream -> %s\n", cloneURL)
+	fmt.Fprintf(ctx.Stdout(), "ℹ️ Private repo name: %s/%s\n", login, privateRepoName)
+	fmt.Fprintln(ctx.Stdout(), "Push with `git push --mirror origin` or select branches to populate the private fork.")
+	return nil
+}
+
+func promptLine(ctx *snap.Context, prompt string) (string, error) {
+	fmt.Fprint(ctx.Stdout(), prompt)
+
+	reader := bufio.NewReader(ctx.Stdin())
+	line, err := reader.ReadString('\n')
+	if errors.Is(err, io.EOF) {
+		return strings.TrimSpace(line), nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+func currentGitHubLogin() (string, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", fmt.Errorf("gh CLI not found in PATH: %w", err)
+	}
+
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			return "", fmt.Errorf("gh api user: %s", trimmed)
+		}
+		return "", fmt.Errorf("gh api user: %w", err)
+	}
+
+	login := strings.TrimSpace(string(output))
+	if login == "" {
+		return "", fmt.Errorf("gh api user returned empty login")
+	}
+	return login, nil
+}
+
+func githubRepoExists(owner, repo string) (bool, error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return false, fmt.Errorf("gh CLI not found in PATH: %w", err)
+	}
+
+	fullName := fmt.Sprintf("%s/%s", owner, repo)
+	cmd := exec.Command("gh", "repo", "view", fullName, "--json", "name")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed != "" {
+			return false, fmt.Errorf("gh repo view %s: %s", fullName, trimmed)
+		}
+		return false, fmt.Errorf("gh repo view %s: %w", fullName, err)
+	}
+
+	return true, nil
+}
+
+func createPrivateRepository(ctx *snap.Context, owner, repo string) error {
+	repoFull := fmt.Sprintf("%s/%s", owner, repo)
+
+	cmd := exec.Command("gh", "repo", "create", repoFull, "--private", "--confirm")
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh repo create %s: %w", repoFull, err)
+	}
+	return nil
+}
+
+func gitCloneTo(ctx *snap.Context, cloneURL, targetDir string) error {
+	cmd := exec.Command("git", "clone", cloneURL, targetDir)
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git clone %s: %w", cloneURL, err)
+	}
 	return nil
 }
 
@@ -1951,6 +2184,15 @@ func gitRefExists(ref string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func runGitCommandInDir(ctx *snap.Context, dir string, args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Stdout = ctx.Stdout()
+	cmd.Stderr = ctx.Stderr()
+	cmd.Stdin = ctx.Stdin()
+	return cmd.Run()
 }
 
 func runGitCommandStreaming(ctx *snap.Context, args ...string) error {
