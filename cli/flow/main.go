@@ -34,6 +34,130 @@ const (
 	openAIAPIKeyEnv    = "OPENAI_API_KEY"
 )
 
+const taskfileTemplate = `version: '3'
+
+tasks:
+  setup-fork:
+    desc: Configure remotes for the private fork and fetch updates.
+    silent: false
+    cmds:
+      - |
+        set -euo pipefail
+        upstream_owner="%[1]s"
+        upstream_repo="%[2]s"
+        fork_owner="%[3]s"
+        fork_repo="%[4]s"
+        upstream_remote="upstream"
+        fork_remote="origin"
+
+        upstream_https="https://github.com/${upstream_owner}/${upstream_repo}"
+        upstream_https_git="${upstream_https}.git"
+        upstream_ssh="git@github.com:${upstream_owner}/${upstream_repo}"
+        upstream_ssh_git="${upstream_ssh}.git"
+        upstream_url="$upstream_https_git"
+        fork_url="git@github.com:${fork_owner}/${fork_repo}.git"
+
+        have_remote() {
+          git remote | grep -qx "$1"
+        }
+
+        add_remote_if_missing() {
+          if ! have_remote "$1"; then
+            echo "Adding remote '$1' -> $2"
+            git remote add "$1" "$2"
+          fi
+        }
+
+        is_upstream_url() {
+          case "$1" in
+            "$upstream_https_git"|"${upstream_https}"|"${upstream_ssh_git}"|"${upstream_ssh}")
+              return 0
+              ;;
+          esac
+          return 1
+        }
+
+        if have_remote "$fork_remote"; then
+          current_url="$(git remote get-url "$fork_remote")"
+          if is_upstream_url "$current_url"; then
+            echo "Renaming remote '$fork_remote' to '$upstream_remote' to keep upstream reference."
+            git remote rename "$fork_remote" "$upstream_remote"
+          fi
+        fi
+
+        add_remote_if_missing "$upstream_remote" "$upstream_url"
+
+        if have_remote "$fork_remote"; then
+          current_url="$(git remote get-url "$fork_remote")"
+          if [ "$current_url" != "$fork_url" ]; then
+            echo "Remote '$fork_remote' already points to $current_url."
+            echo "Update it manually if you meant to use $fork_url."
+          fi
+        else
+          echo "Adding remote '$fork_remote' -> $fork_url"
+          git remote add "$fork_remote" "$fork_url"
+        fi
+
+        echo "Fetching all remotes..."
+        git fetch --all --prune
+        current_branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+        if [ -n "$current_branch" ]; then
+          current_remote="$(git config --get "branch.${current_branch}.remote" || true)"
+          if [ "$current_remote" != "$fork_remote" ]; then
+            echo "Setting upstream for branch '$current_branch' to $fork_remote/$current_branch"
+            git config "branch.${current_branch}.remote" "$fork_remote"
+            git config "branch.${current_branch}.merge" "refs/heads/${current_branch}"
+            echo "Next push from '$current_branch' will target $fork_remote."
+          fi
+        else
+          echo "Detached HEAD; skipping upstream tracking update."
+        fi
+        echo "Fork remotes configured."
+
+  pull:
+    desc: Fetch upstream and fast-forward the current branch (or specified branch).
+    silent: false
+    cmds:
+      - |
+        set -euo pipefail
+        set --{{if .CLI_ARGS}} {{.CLI_ARGS}}{{end}}
+        git fetch upstream --prune
+
+        if [ $# -gt 0 ]; then
+          target_branch="$1"
+        else
+          target_branch="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
+          if [ -z "$target_branch" ]; then
+            target_branch="main"
+            echo "Detached HEAD; defaulting to branch '$target_branch'."
+          fi
+        fi
+
+        if ! git show-ref --verify --quiet "refs/remotes/upstream/${target_branch}"; then
+          echo "Upstream branch 'upstream/${target_branch}' not found."
+          echo "Available upstream branches:"
+          git branch -r | sed 's/^/  /'
+          exit 1
+        fi
+
+        if ! git show-ref --verify --quiet "refs/heads/${target_branch}"; then
+          echo "Creating local branch '${target_branch}' from upstream/${target_branch}."
+          git checkout -b "$target_branch" "upstream/${target_branch}"
+        elif [ "$(git rev-parse --abbrev-ref HEAD)" != "$target_branch" ]; then
+          echo "Switching to local branch '${target_branch}'."
+          git checkout "$target_branch"
+        fi
+
+        echo "Fast-forwarding '${target_branch}' with upstream/${target_branch}."
+        if ! git merge --ff-only "upstream/${target_branch}"; then
+          echo "Fast-forward failed (local commits diverged)."
+          echo "Consider resolving manually or running:"
+          echo "  git rebase upstream/${target_branch}"
+          exit 1
+        fi
+        echo "Branch '${target_branch}' matches upstream/${target_branch}."
+`
+
 var cachedOpenAIKey string
 
 type commandInfo struct {
@@ -95,7 +219,7 @@ func main() {
 		return runGitCheckout(ctx)
 	})
 
-	registerCommand(app, "privateForkRepo", "Create a private fork in ~/fork/<owner>/<repo> with upstream remotes", func(ctx *snap.Context) error {
+	registerCommand(app, "privateForkRepo", "Create a private fork in ~/fork-i/<owner>/<repo> with upstream remotes", func(ctx *snap.Context) error {
 		return runPrivateForkRepo(ctx)
 	})
 
@@ -314,7 +438,7 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintf(out, "  %s gitCheckout <branch>\n", commandName)
 		return true
 	case "privateForkRepo":
-		fmt.Fprintln(out, "Clone a public repo into ~/fork and create a private fork under your account")
+		fmt.Fprintln(out, "Clone a public repo into ~/fork-i and create a private fork under your account")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
 		fmt.Fprintf(out, "  %s privateForkRepo [github-repo-url]\n", commandName)
@@ -647,7 +771,7 @@ func runOpenLookingBack(ctx *snap.Context) error {
 		return reportError(ctx, fmt.Errorf("determine home directory: %w", err))
 	}
 
-	baseDir := filepath.Join(homeDir, "src", "nikiv", "content", "docs", "looking-back")
+	baseDir := filepath.Join(homeDir, "nikiv", "content", "docs", "looking-back")
 	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return reportError(ctx, fmt.Errorf("create directory %s: %w", baseDir, err))
 	}
@@ -1470,7 +1594,7 @@ func runPrivateForkRepo(ctx *snap.Context) error {
 		return reportError(ctx, fmt.Errorf("determine home directory: %w", err))
 	}
 
-	targetDir := filepath.Join(homeDir, "fork", owner, repo)
+	targetDir := filepath.Join(homeDir, "fork-i", owner, repo)
 	parentDir := filepath.Dir(targetDir)
 	if err := os.MkdirAll(parentDir, 0o755); err != nil {
 		return reportError(ctx, fmt.Errorf("create directory %s: %w", parentDir, err))
@@ -1518,12 +1642,45 @@ func runPrivateForkRepo(ctx *snap.Context) error {
 		return reportError(ctx, fmt.Errorf("git remote add origin %s: %w", privateSSH, err))
 	}
 
+	taskfileCreated, err := ensureTaskfile(targetDir, owner, repo, login, privateRepoName)
+	if err != nil {
+		return reportError(ctx, fmt.Errorf("prepare Taskfile.yml: %w", err))
+	}
+
 	fmt.Fprintf(ctx.Stdout(), "✔️ Local copy: %s\n", targetDir)
 	fmt.Fprintf(ctx.Stdout(), "✔️ origin -> %s\n", privateSSH)
 	fmt.Fprintf(ctx.Stdout(), "✔️ upstream -> %s\n", cloneURL)
 	fmt.Fprintf(ctx.Stdout(), "ℹ️ Private repo name: %s/%s\n", login, privateRepoName)
+	taskfileLocation := filepath.Join(targetDir, "Taskfile.yml")
+	if taskfileCreated {
+		fmt.Fprintf(ctx.Stdout(), "✔️ Taskfile.yml created at %s\n", taskfileLocation)
+	} else {
+		fmt.Fprintf(ctx.Stdout(), "ℹ️ Taskfile.yml already present at %s; left unchanged\n", taskfileLocation)
+	}
 	fmt.Fprintln(ctx.Stdout(), "Push with `git push --mirror origin` or select branches to populate the private fork.")
 	return nil
+}
+
+func ensureTaskfile(targetDir, owner, repo, login, privateRepoName string) (bool, error) {
+	taskfileOnDisk := filepath.Join(targetDir, "Taskfile.yml")
+
+	info, err := os.Stat(taskfileOnDisk)
+	if err == nil {
+		if info.IsDir() {
+			return false, fmt.Errorf("%s exists and is a directory", taskfileOnDisk)
+		}
+		return false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", taskfileOnDisk, err)
+	}
+
+	content := fmt.Sprintf(taskfileTemplate, owner, repo, login, privateRepoName)
+	if err := os.WriteFile(taskfileOnDisk, []byte(content), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", taskfileOnDisk, err)
+	}
+
+	return true, nil
 }
 
 func promptLine(ctx *snap.Context, prompt string) (string, error) {
