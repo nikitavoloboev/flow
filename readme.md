@@ -12,7 +12,7 @@ Run `task` to see all possible commands.
 
 `flow` is a CLI as a dump of various commands written in Go that are useful to me. See [cli/flow](cli/flow) for its code/docs.
 
-Run `task deploy` to install `flow-go` into PATH. It also puts `fe` command in path (my own personal shorthand, but you can change it).
+Run `task deploy` to install the Go-flavoured binary (`fgo`) into PATH; it also creates an `fe` symlink as a quick alias.
 
 ## Contributing
 

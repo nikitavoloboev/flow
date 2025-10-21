@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,13 +11,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 	"unicode"
 
 	"github.com/dzonerzy/go-snap/snap"
 	fzf "github.com/junegunn/fzf/src"
 	fzfutil "github.com/junegunn/fzf/src/util"
+	"github.com/ktr0731/go-fuzzyfinder"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
@@ -26,13 +30,76 @@ const (
 	flowVersion        = "1.0.0"
 	upgradeScriptPath  = "/Users/nikiv/src/config/sh/upgrade-go-version.sh"
 	taskfilePath       = "Taskfile.yml"
-	commandName        = "fgo"
-	commandSummary     = "fgo is CLI to do things fast"
+	defaultCommandName = "fgo"
+	defaultSummary     = "fgo is CLI to do things fast"
 	flowInstallDir     = "~/bin"
 	commitModelName    = "gpt-5-nano"
 	maxCommitDiffRunes = 12000
 	openAIAPIKeyEnv    = "OPENAI_API_KEY"
 )
+
+var (
+	commandName    = defaultCommandName
+	commandSummary = defaultSummary
+)
+
+func init() {
+	summary, summaryLocked := lookupNonEmptyEnv("FLOW_COMMAND_SUMMARY")
+	if summaryLocked {
+		commandSummary = summary
+	}
+
+	if name, ok := lookupNonEmptyEnv("FLOW_COMMAND_NAME"); ok {
+		applyCommandIdentity(name, summaryLocked)
+		return
+	}
+
+	applyCommandIdentity(filepath.Base(os.Args[0]), summaryLocked)
+}
+
+func lookupNonEmptyEnv(key string) (string, bool) {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return "", false
+	}
+
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", false
+	}
+
+	return trimmed, true
+}
+
+func applyCommandIdentity(candidate string, summaryLocked bool) {
+	trimmed := strings.TrimSpace(candidate)
+	if trimmed == "" {
+		return
+	}
+
+	base := filepath.Base(trimmed)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = trimmed
+	}
+
+	if ext := filepath.Ext(base); ext != "" {
+		withoutExt := strings.TrimSuffix(base, ext)
+		if withoutExt != "" {
+			base = withoutExt
+		}
+	}
+
+	if base == "" {
+		return
+	}
+
+	commandName = base
+	if summaryLocked {
+		return
+	}
+
+	commandSummary = fmt.Sprintf("%s is CLI to do things fast", base)
+}
 
 const taskfileTemplate = `version: '3'
 
@@ -217,6 +284,10 @@ func main() {
 
 	registerCommand(app, "gitCheckout", "Check out a branch from the remote, creating a local tracking branch if needed", func(ctx *snap.Context) error {
 		return runGitCheckout(ctx)
+	})
+
+	registerCommand(app, "killPort", "Kill a process by the port it listens on, optionally with fuzzy finder", func(ctx *snap.Context) error {
+		return runKillPort(ctx)
 	})
 
 	registerCommand(app, "privateForkRepo", "Create a private fork in ~/fork-i/<owner>/<repo> with upstream remotes", func(ctx *snap.Context) error {
@@ -435,7 +506,13 @@ func printCommandHelp(name string, out io.Writer) bool {
 		fmt.Fprintln(out, "Check out a branch from the remote, creating a local tracking branch if needed")
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "Usage:")
-		fmt.Fprintf(out, "  %s gitCheckout <branch>\n", commandName)
+		fmt.Fprintf(out, "  %s gitCheckout [branch-or-url]\n", commandName)
+		return true
+	case "killPort":
+		fmt.Fprintln(out, "Kill a process by the port it listens on, optionally with fuzzy finder")
+		fmt.Fprintln(out)
+		fmt.Fprintln(out, "Usage:")
+		fmt.Fprintf(out, "  %s killPort [port]\n", commandName)
 		return true
 	case "privateForkRepo":
 		fmt.Fprintln(out, "Clone a public repo into ~/fork-i and create a private fork under your account")
@@ -509,6 +586,7 @@ func printRootHelp(out io.Writer) {
 	fmt.Fprintln(out, "  clone            Clone a GitHub repository into ~/gh/<owner>/<repo>")
 	fmt.Fprintln(out, "  cloneAndOpen     Clone a GitHub repository and open it in Cursor (Safari tab optional)")
 	fmt.Fprintln(out, "  gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed")
+	fmt.Fprintln(out, "  killPort         Kill a process by the port it listens on, optionally with fuzzy finder")
 	fmt.Fprintln(out, "  privateForkRepo  Clone a repo and create a private fork with upstream remotes")
 	fmt.Fprintln(out, "  gitFetchUpstream Fetch from upstream (or all remotes) with pruning")
 	fmt.Fprintln(out, "  gitSyncFork      Update a local branch from upstream using rebase or merge")
@@ -1957,15 +2035,28 @@ func runGitSyncFork(ctx *snap.Context) error {
 }
 
 func runGitCheckout(ctx *snap.Context) error {
-	if ctx.NArgs() != 1 {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout <branch>\n", commandName)
-		return fmt.Errorf("expected 1 argument, got %d", ctx.NArgs())
+	if ctx.NArgs() > 1 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout [branch-or-url]\n", commandName)
+		return fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs())
 	}
 
-	branchInput := strings.TrimSpace(ctx.Arg(0))
-	if branchInput == "" {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout <branch>\n", commandName)
-		return fmt.Errorf("branch name cannot be empty")
+	var (
+		branchInput string
+		err         error
+	)
+
+	if ctx.NArgs() == 1 {
+		branchInput = strings.TrimSpace(ctx.Arg(0))
+	} else {
+		branchInput, err = promptLine(ctx, "Branch name or GitHub tree URL: ")
+		if err != nil {
+			return fmt.Errorf("read branch input: %w", err)
+		}
+	}
+
+	if branchInput = strings.TrimSpace(branchInput); branchInput == "" {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout [branch-or-url]\n", commandName)
+		return fmt.Errorf("branch reference cannot be empty")
 	}
 
 	if err := ensureGitRepository(); err != nil {
@@ -2013,7 +2104,7 @@ func runGitCheckout(ctx *snap.Context) error {
 	}
 
 	if branchName == "" {
-		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout <branch>\n", commandName)
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s gitCheckout [branch-or-url]\n", commandName)
 		return fmt.Errorf("branch name cannot be empty")
 	}
 
@@ -2052,6 +2143,174 @@ func runGitCheckout(ctx *snap.Context) error {
 	}
 
 	return runGitCommandStreaming(ctx, "checkout", "-b", branchName, remoteRef)
+}
+
+func runKillPort(ctx *snap.Context) error {
+	if ctx.NArgs() > 1 {
+		fmt.Fprintf(ctx.Stderr(), "Usage: %s killPort [port]\n", commandName)
+		return reportError(ctx, fmt.Errorf("expected at most 1 argument, got %d", ctx.NArgs()))
+	}
+
+	processes, err := listListeningProcesses()
+	if err != nil {
+		return reportError(ctx, err)
+	}
+
+	if len(processes) == 0 {
+		fmt.Fprintln(ctx.Stdout(), "No listening TCP ports found.")
+		return nil
+	}
+
+	targets := processes
+	if ctx.NArgs() == 1 {
+		rawPort := strings.TrimSpace(ctx.Arg(0))
+		if rawPort == "" {
+			fmt.Fprintf(ctx.Stderr(), "Usage: %s killPort [port]\n", commandName)
+			return reportError(ctx, fmt.Errorf("port cannot be empty"))
+		}
+
+		targets = uniqueListeningByPID(filterListeningProcessesByPort(processes, rawPort))
+		if len(targets) == 0 {
+			fmt.Fprintf(ctx.Stdout(), "No listening process found on port %s.\n", rawPort)
+			return nil
+		}
+
+		if len(targets) == 1 {
+			selected := targets[0]
+			if err := killListeningProcess(selected.PID); err != nil {
+				return reportError(ctx, fmt.Errorf("kill pid %d: %w", selected.PID, err))
+			}
+			fmt.Fprintf(ctx.Stdout(), "Killed %s (pid %d) listening on %s\n", selected.Command, selected.PID, selected.Address)
+			return nil
+		}
+	}
+
+	idx, err := fuzzyfinder.Find(
+		targets,
+		func(i int) string {
+			p := targets[i]
+			return fmt.Sprintf("%s (%d) %s", p.Command, p.PID, p.Address)
+		},
+		fuzzyfinder.WithPromptString("killPort> "),
+	)
+	if err != nil {
+		if errors.Is(err, fuzzyfinder.ErrAbort) {
+			return nil
+		}
+		return reportError(ctx, fmt.Errorf("select port: %w", err))
+	}
+
+	selected := targets[idx]
+	if err := killListeningProcess(selected.PID); err != nil {
+		return reportError(ctx, fmt.Errorf("kill pid %d: %w", selected.PID, err))
+	}
+
+	fmt.Fprintf(ctx.Stdout(), "Killed %s (pid %d) listening on %s\n", selected.Command, selected.PID, selected.Address)
+	return nil
+}
+
+type listeningProcess struct {
+	Command string
+	User    string
+	PID     int
+	Address string
+	Port    string
+	Raw     string
+}
+
+func listListeningProcesses() ([]listeningProcess, error) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		return nil, fmt.Errorf("lsof not found in PATH: %w", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	cmd := exec.Command("lsof", "-nP", "-iTCP", "-sTCP:LISTEN")
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return nil, fmt.Errorf("list listening ports: %s: %w", msg, err)
+		}
+		return nil, fmt.Errorf("list listening ports: %w", err)
+	}
+
+	scanner := bufio.NewScanner(&stdout)
+	var processes []listeningProcess
+	firstLine := true
+	for scanner.Scan() {
+		line := scanner.Text()
+		if firstLine {
+			firstLine = false
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 9 {
+			continue
+		}
+
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+
+		address := fields[len(fields)-2]
+		port := address
+		if idx := strings.LastIndex(address, ":"); idx >= 0 && idx+1 < len(address) {
+			port = address[idx+1:]
+		}
+
+		processes = append(processes, listeningProcess{
+			Command: fields[0],
+			User:    fields[2],
+			PID:     pid,
+			Address: address,
+			Port:    port,
+			Raw:     line,
+		})
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan lsof output: %w", err)
+	}
+
+	return processes, nil
+}
+
+func killListeningProcess(pid int) error {
+	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func filterListeningProcessesByPort(processes []listeningProcess, targetPort string) []listeningProcess {
+	var filtered []listeningProcess
+	for _, p := range processes {
+		if p.Port == targetPort {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered
+}
+
+func uniqueListeningByPID(processes []listeningProcess) []listeningProcess {
+	seen := make(map[int]struct{})
+	var unique []listeningProcess
+	for _, p := range processes {
+		if _, ok := seen[p.PID]; ok {
+			continue
+		}
+		seen[p.PID] = struct{}{}
+		unique = append(unique, p)
+	}
+	return unique
 }
 
 func parseGitHubTreeURL(raw string) ([]string, error) {
