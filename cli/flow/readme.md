@@ -19,6 +19,7 @@ Available Commands:
   clone            Clone a GitHub repository into ~/gh/<owner>/<repo>
   cloneAndOpen     Clone a GitHub repository and open it in Cursor (Safari tab optional)
   gitCheckout      Check out a branch from the remote, creating a local tracking branch if needed
+  killPort         Kill a process by the port it listens on, optionally with fuzzy finder
   privateForkRepo  Clone a repo and create a private fork with upstream remotes
   gitFetchUpstream Fetch from upstream (or all remotes) with pruning
   gitSyncFork      Update a local branch from upstream using rebase or merge
